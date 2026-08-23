@@ -9,6 +9,19 @@ directly from the Spotify app/Connect UI -- the bot only relays audio.
 Slots are no longer fixed at startup: a slot only gets a running process once
 it's been claimed via /link (bot/spotify_link.py), and /delete-slot stops and
 removes one at runtime. See bot/slot_store.py for the claimed/free bookkeeping.
+
+LibrespotProcess also owns a permanent background reader on the pipe (see
+"pipe draining" below) -- without it, pausing in Spotify (or seeking, or
+simply nobody being /connect'd yet) leaves nothing draining the FIFO. Once
+the kernel pipe buffer (~64KB) fills, librespot's write() call blocks
+indefinitely and its whole playback thread hangs -- the only fix at that
+point is restarting librespot (or the instance) entirely. And because the
+FIFO is long-lived, whatever stale/backed-up bytes were sitting in it play
+out first the next time ffmpeg attaches, which is the "audio speeds up and
+distorts at the start" symptom. Keeping a reader on the pipe at all times
+(discarding data whenever no real playback is attached, pausing only while
+ffmpeg is actually consuming it for Discord) fixes both: librespot's writer
+never blocks, and there's never a backlog left over to play out.
 """
 
 import asyncio
@@ -19,11 +32,15 @@ from config import LIBRESPOT_BIN, PIPE_DIR, SpotifySlot
 
 log = logging.getLogger("librespot")
 
+_DRAIN_CHUNK_SIZE = 65536
+
 
 class LibrespotProcess:
     def __init__(self, slot: SpotifySlot):
         self.slot = slot
         self._proc: asyncio.subprocess.Process | None = None
+        self._drain_fd: int | None = None
+        self._draining = True
 
     def ensure_pipe(self) -> None:
         os.makedirs(PIPE_DIR, exist_ok=True)
@@ -32,6 +49,8 @@ class LibrespotProcess:
 
     async def start(self) -> None:
         self.ensure_pipe()
+        self._open_drain_reader()
+
         # librespot uses Rust's env_logger, which only prints ERROR by
         # default -- without RUST_LOG, auth failures etc. are silent.
         env = {**os.environ, "RUST_LOG": "info"}
@@ -51,6 +70,43 @@ class LibrespotProcess:
         log.info("started librespot for slot %s (pid=%s)", self.slot.name, self._proc.pid)
         asyncio.create_task(self._log_stderr())
 
+    def _open_drain_reader(self) -> None:
+        """Opens our own permanent read end on the pipe, non-blocking, and
+        registers it with the event loop. This must happen BEFORE librespot
+        starts -- a FIFO opened for writing blocks until a reader exists, so
+        without this librespot's own open() would block until the first
+        /connect ever happened. A no-op if we already have one open (e.g.
+        restart_if_dead() restarting a crashed librespot -- the pipe reader
+        itself doesn't need to restart, only the writer)."""
+        if self._drain_fd is not None:
+            return
+        self._drain_fd = os.open(self.slot.pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+        asyncio.get_running_loop().add_reader(self._drain_fd, self._on_pipe_readable)
+
+    def _on_pipe_readable(self) -> None:
+        # Only actually consume bytes while nothing else (ffmpeg, via
+        # discord.py) is attached -- pause_draining() stops this without
+        # closing the fd, so librespot never sees a gap in readers even
+        # while ffmpeg is the one actually consuming the audio.
+        if not self._draining or self._drain_fd is None:
+            return
+        try:
+            os.read(self._drain_fd, _DRAIN_CHUNK_SIZE)
+        except BlockingIOError:
+            pass
+        except OSError:
+            log.exception("error draining pipe for slot %s", self.slot.name)
+
+    def pause_draining(self) -> None:
+        """Call right before attaching a real (ffmpeg) reader for playback,
+        so we stop competing with it for bytes."""
+        self._draining = False
+
+    def resume_draining(self) -> None:
+        """Call once playback stops for any reason (disconnect, error, the
+        track/source ending) so librespot's writer never blocks again."""
+        self._draining = True
+
     async def _log_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
         async for line in self._proc.stderr:
@@ -63,6 +119,10 @@ class LibrespotProcess:
                 await asyncio.wait_for(self._proc.wait(), timeout=5)
             except asyncio.TimeoutError:
                 self._proc.kill()
+        if self._drain_fd is not None:
+            asyncio.get_running_loop().remove_reader(self._drain_fd)
+            os.close(self._drain_fd)
+            self._drain_fd = None
 
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.returncode is None

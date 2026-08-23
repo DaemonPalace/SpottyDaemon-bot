@@ -19,25 +19,18 @@ slash command routed through a small Lambda.
 
 ## EC2 setup
 
-1. Launch `t4g.micro`, Amazon Linux 2023 (arm64), 8 GiB gp3 root volume, tag `Name=discord-music-bot`.
-2. Attach an instance profile using `infra/iam-ec2-instance-policy.json` (fill in `REGION`/`ACCOUNT_ID`) — lets the bot stop only this tagged instance.
-3. Install deps:
-   ```
-   sudo dnf install -y python3.12 python3.12-pip ffmpeg
-   # librespot: build from https://github.com/librespot-org/librespot or grab a prebuilt arm64 binary
-   ```
-4. `git clone` this repo to `/opt/discord-bot`, create a venv, `pip install -r requirements.txt`.
-5. Copy `.env.example` to `/opt/discord-bot/.env`, fill in `DISCORD_TOKEN` and both Spotify slot credentials.
-6. `sudo cp systemd/discord-music-bot.service /etc/systemd/system/`, then `sudo useradd -r discordbot`, `sudo systemctl enable --now discord-music-bot`.
+1. Launch `t3.micro` (free-tier eligible; use `t3.small` if 1 GiB RAM feels tight), Amazon Linux 2023 (x86_64), 8 GiB gp3 root volume, tag `Name=discord-music-bot`.
+2. Create secret `discord-music-bot/credentials` in Secrets Manager (Secret type: "Other", plaintext JSON) with keys `DISCORD_TOKEN`, `SPOTIFY_1_USERNAME`, `SPOTIFY_1_PASSWORD`, `SPOTIFY_2_USERNAME`, `SPOTIFY_2_PASSWORD`. ~$0.40/month total.
+3. From your own machine: `infra/create-ec2-role.sh` creates the instance's IAM role + instance profile (lets the bot stop only this tagged instance and read only this one secret), then attach it per the command it prints.
+4. `git clone` this repo to `~/discord-bot` on the instance, then run `infra/setup-instance.sh` (on the instance) — installs system deps, ffmpeg, Rust, builds librespot, deploys the bot to `/opt/discord-bot`, and installs the systemd service. Safe to re-run (e.g. after a `git pull`) — it skips work already done and never touches an existing `.env`.
+5. Edit `/opt/discord-bot/.env`: confirm `SECRETS_MANAGER_SECRET_ID=discord-music-bot/credentials` is set, leave `DISCORD_TOKEN`/`SPOTIFY_*` blank.
+6. `sudo systemctl start discord-music-bot`, then run `infra/bootstrap-spotify-oauth.sh` once per Spotify account slot (see that script's header for the SSH tunnel steps).
 
 ## Lambda (wake/sleep) setup
 
-1. Create the Discord app's slash commands `/wake` and `/sleep` (no options) via the Discord API.
-2. Deploy `lambda/wake_sleep.py` (bundle with `lambda/requirements.txt`; `boto3` is already in the Lambda runtime).
-3. Set env vars `DISCORD_PUBLIC_KEY` (from the Discord developer portal) and `INSTANCE_TAG_NAME=discord-music-bot`.
-4. Attach a role using `infra/iam-lambda-policy.json` (fill in `REGION`/`ACCOUNT_ID`).
-5. Enable a Lambda Function URL (auth type `NONE` — Discord itself can't sign AWS SigV4; the Ed25519 signature check in the handler is what actually authenticates requests).
-6. Paste the Function URL into the Discord app's "Interactions Endpoint URL" field.
+1. From your own machine: `DISCORD_PUBLIC_KEY=<from the Discord developer portal> infra/deploy-lambda.sh` — builds `lambda/wake_sleep.py` + deps, creates the Lambda's IAM role, deploys the function, and creates a public Function URL with both resource-policy permissions it needs (`lambda:InvokeFunctionUrl` *and* `lambda:InvokeFunction` — AWS requires both as of Oct 2025; missing either gives a 403 `AccessDeniedException` before your code ever runs). Re-run any time `wake_sleep.py` changes.
+2. Paste the Function URL it prints into the Discord app's "Interactions Endpoint URL" field. Discord's auth type NONE is intentional — Discord itself can't sign AWS SigV4, so the Ed25519 signature check inside the handler is what actually authenticates requests.
+3. `DISCORD_APPLICATION_ID=<app id> DISCORD_BOT_TOKEN=<bot token> infra/register-discord-commands.sh` — registers the global `/wake` and `/sleep` slash commands. Global commands can take up to an hour to show up in a server; re-run any time you change a command's name/description.
 
 ## Idle shutdown
 
@@ -51,6 +44,5 @@ stale connection to time out on its own.
 
 ## Known gaps / next steps
 
-- Discord slash commands `/wake` and `/sleep` must be registered once via the Discord API (not automated here).
 - Spotify credentials are plain username/password env vars; consider `librespot`'s cached-credentials mode if rotating passwords is undesirable.
 - No health check / alerting if librespot or the bot crash-loops beyond systemd's restart.

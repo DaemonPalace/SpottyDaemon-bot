@@ -1,10 +1,14 @@
-"""Launches and supervises one librespot process per Spotify slot.
+"""Launches and supervises one librespot process per claimed Spotify slot.
 
 Each librespot instance authenticates as one Spotify Premium account and
 registers itself as a Spotify Connect device. Audio it decodes is written as
 raw PCM to a named pipe, which the Discord bot reads via ffmpeg and plays
 into a voice channel. Playback (play/pause/skip/volume) stays controlled
-directly from the Spotify app/Connect UI — the bot only relays audio.
+directly from the Spotify app/Connect UI -- the bot only relays audio.
+
+Slots are no longer fixed at startup: a slot only gets a running process once
+it's been claimed via /link (bot/spotify_link.py), and /delete-slot stops and
+removes one at runtime. See bot/slot_store.py for the claimed/free bookkeeping.
 """
 
 import asyncio
@@ -66,21 +70,47 @@ class LibrespotProcess:
 
 class LibrespotManager:
     def __init__(self, slots: list[SpotifySlot]):
-        self.processes = {slot.name: LibrespotProcess(slot) for slot in slots}
+        self._all_slots = {slot.index: slot for slot in slots}
+        self.processes: dict[str, LibrespotProcess] = {}
 
-    async def start_all(self) -> None:
-        for proc in self.processes.values():
-            await proc.start()
+    def slot_by_index(self, index: int) -> SpotifySlot | None:
+        return self._all_slots.get(index)
+
+    async def start_claimed(self, claimed_indexes: set[int]) -> None:
+        for index in claimed_indexes:
+            slot = self._all_slots.get(index)
+            if slot is None:
+                continue
+            if not os.path.exists(os.path.join(slot.cache_dir, "credentials.json")):
+                log.warning(
+                    "slot %s is marked claimed but has no credentials.json, skipping", slot.name
+                )
+                continue
+            await self.start_one(slot)
+
+    async def start_one(self, slot: SpotifySlot) -> None:
+        existing = self.processes.get(slot.name)
+        if existing and existing.is_running():
+            return
+        proc = LibrespotProcess(slot)
+        await proc.start()
+        self.processes[slot.name] = proc
+
+    async def stop_one(self, slot_name: str) -> None:
+        proc = self.processes.pop(slot_name, None)
+        if proc is not None:
+            await proc.stop()
 
     async def stop_all(self) -> None:
-        for proc in self.processes.values():
+        for proc in list(self.processes.values()):
             await proc.stop()
+        self.processes.clear()
 
     def get(self, slot_name: str) -> LibrespotProcess:
         return self.processes[slot_name]
 
     async def restart_if_dead(self) -> None:
-        for proc in self.processes.values():
+        for proc in list(self.processes.values()):
             if not proc.is_running():
                 log.warning("librespot for %s died, restarting", proc.slot.name)
                 await proc.start()

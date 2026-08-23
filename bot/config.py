@@ -42,37 +42,46 @@ ENABLE_AUTO_SHUTDOWN = os.environ.get("ENABLE_AUTO_SHUTDOWN", "true").lower() ==
 LIBRESPOT_BIN = os.environ.get("LIBRESPOT_BIN", "librespot")
 PIPE_DIR = os.environ.get("PIPE_DIR", "/tmp/librespot")
 # Must be persistent storage, NOT /tmp (tmpfs, wiped on reboot) -- this is
-# where each slot's OAuth-derived credentials.json lives after the one-time
-# interactive `--enable-oauth` bootstrap (see infra/bootstrap-spotify-oauth.sh).
+# where each slot's OAuth-derived credentials.json lives after linking (see
+# bot/spotify_link.py), and where slots.json (bot/slot_store.py) is kept.
 LIBRESPOT_CACHE_DIR = os.environ.get("LIBRESPOT_CACHE_DIR", "/opt/discord-bot/librespot-cache")
+
+# Up to this many self-serve Spotify slots. Slots start unclaimed -- /link
+# claims one, /delete-slot frees it back up. See bot/slot_store.py.
+MAX_SLOTS = int(os.environ.get("MAX_SLOTS", "5"))
+
+# Local OAuth redirect port librespot's --enable-oauth binds while a /link is
+# in progress (bot/spotify_link.py). Only ever one transient login process at
+# a time per slot, and librespot's OAuth client only accepts loopback
+# redirect URIs anyway (see bootstrap-spotify-oauth.sh / spotify_link.py
+# module docstring) so this never needs to be reachable from outside the box.
+LINK_OAUTH_PORT = int(os.environ.get("LINK_OAUTH_PORT", "5588"))
+# How long a friend has between /link and finishing with /link-finish before
+# the slot reverts to free and they have to start over. Generous on purpose
+# -- this covers actually reading the instructions, opening Spotify, logging
+# in (possibly through 2FA), and coming back to paste the url.
+LINK_TIMEOUT_SECONDS = int(os.environ.get("LINK_TIMEOUT_SECONDS", "900"))
 
 
 @dataclass(frozen=True)
 class SpotifySlot:
+    index: int
     name: str
     cache_dir: str
     pipe_path: str
 
 
-def _slot(index: int) -> SpotifySlot | None:
+def _slot(index: int) -> SpotifySlot:
     prefix = f"SPOTIFY_{index}_"
-    cache_dir = os.path.join(LIBRESPOT_CACHE_DIR, f"slot{index}")
-    if not os.path.exists(os.path.join(cache_dir, "credentials.json")):
-        return None
     return SpotifySlot(
+        index=index,
         name=os.environ.get(f"{prefix}DEVICE_NAME", f"discord-bot-{index}"),
-        cache_dir=cache_dir,
+        cache_dir=os.path.join(LIBRESPOT_CACHE_DIR, f"slot{index}"),
         pipe_path=os.path.join(PIPE_DIR, f"slot{index}.pcm"),
     )
 
 
-# Up to 2 slots -> matches the "max 2 simultaneous streams" requirement, but
-# only slots that have already completed the OAuth bootstrap get built. Runs
-# fine with 1 -- add slot 2's credentials.json whenever it's bootstrapped.
-SLOTS = [slot for slot in (_slot(1), _slot(2)) if slot is not None]
-if not SLOTS:
-    raise RuntimeError(
-        f"No Spotify accounts bootstrapped. Run "
-        f"infra/bootstrap-spotify-oauth.sh for at least slot 1 so "
-        f"{LIBRESPOT_CACHE_DIR}/slot1/credentials.json exists."
-    )
+# All possible slots, regardless of whether anyone has linked an account to
+# them yet -- bot/slot_store.py tracks which ones are actually claimed.
+SLOTS = [_slot(index) for index in range(1, MAX_SLOTS + 1)]
+SLOTS_BY_INDEX = {slot.index: slot for slot in SLOTS}

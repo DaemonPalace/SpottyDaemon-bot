@@ -6,15 +6,19 @@ import discord
 
 import ec2_control
 from config import ENABLE_AUTO_SHUTDOWN, IDLE_CHECK_INTERVAL_SECONDS, IDLE_SHUTDOWN_MINUTES
+from slot_store import STATE_LINKING, SlotStore
 
 log = logging.getLogger("idle_monitor")
 
 
 class IdleMonitor:
-    """Stops the EC2 instance after IDLE_SHUTDOWN_MINUTES with zero active voice connections."""
+    """Stops the EC2 instance after IDLE_SHUTDOWN_MINUTES with zero active
+    voice connections and no /link in progress (a link involves no voice
+    connection at all, but shouldn't get killed mid-flow)."""
 
-    def __init__(self, bot: discord.Client):
+    def __init__(self, bot: discord.Client, store: SlotStore):
         self.bot = bot
+        self.store = store
         self._last_active = time.monotonic()
         self._task: asyncio.Task | None = None
 
@@ -30,7 +34,12 @@ class IdleMonitor:
         while True:
             await asyncio.sleep(IDLE_CHECK_INTERVAL_SECONDS)
 
-            if self.bot.voice_clients:
+            linking = any(
+                slot.state == STATE_LINKING
+                for i in range(1, self.store.max_slots + 1)
+                if (slot := self.store.get_by_index(i)) is not None
+            )
+            if self.bot.voice_clients or linking:
                 self._last_active = time.monotonic()
                 continue
 

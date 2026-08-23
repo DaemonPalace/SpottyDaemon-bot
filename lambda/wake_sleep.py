@@ -10,10 +10,17 @@ Handled directly here (don't need the bot process running):
   /wake  -> ec2:StartInstances
   /sleep -> ec2:StopInstances
 
-Everything else (e.g. /connect, /disconnect) only makes sense while the bot
-is actually running, so those are deferred and relayed to the bot over SQS
--- the bot long-polls the queue and sends the real response itself via
-Discord's webhook-followup API using the interaction token.
+/connect and /link collect a password via a Discord modal popup rather than
+a plain command argument, so it doesn't show up in the channel's visible
+command-usage line. A modal has to be shown as the *immediate* response to
+the slash command (Discord doesn't support deferring and showing a modal
+later), so those two are answered here with a MODAL response instead of
+being relayed. The modal's *submission* comes back to this same endpoint as
+a separate MODAL_SUBMIT interaction -- that's what actually gets relayed to
+the bot over SQS, alongside /disconnect, /link-finish and /delete-slot,
+which only make sense while the bot is running. The bot long-polls the
+queue and sends the real response itself via Discord's webhook-followup API
+using the interaction token.
 
 Discord requires responding to the PING verification handshake and to every
 interaction within 3 seconds with a valid Ed25519-signed response.
@@ -33,13 +40,23 @@ AWS_REGION = os.environ.get("AWS_REGION")
 
 _verify_key = VerifyKey(bytes.fromhex(DISCORD_PUBLIC_KEY))
 
-PING = 1
-PONG = 1
-APPLICATION_COMMAND = 2
-CHANNEL_MESSAGE_WITH_SOURCE = 4
-DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5
+# Discord interaction types (the incoming request).
+TYPE_PING = 1
+TYPE_APPLICATION_COMMAND = 2
+TYPE_MODAL_SUBMIT = 5
+
+# Discord interaction response types (what we send back).
+RESPONSE_PONG = 1
+RESPONSE_CHANNEL_MESSAGE_WITH_SOURCE = 4
+RESPONSE_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5
+RESPONSE_MODAL = 9
+
 EPHEMERAL = 64
 DIRECT_COMMANDS = {"wake", "sleep"}
+# These are answered with a MODAL directly instead of being relayed -- see
+# module docstring. Everything else that needs the bot running (disconnect,
+# link-finish, delete-slot, and any MODAL_SUBMIT) goes over SQS as before.
+MODAL_COMMANDS = {"connect", "link"}
 
 
 def _find_instance(ec2) -> tuple[str, str] | tuple[None, None]:
@@ -74,43 +91,90 @@ def _response(status: int, payload: dict) -> dict:
     }
 
 
+def _message_response(content: str, ephemeral: bool = False) -> dict:
+    data = {"content": content}
+    if ephemeral:
+        data["flags"] = EPHEMERAL
+    return _response(200, {"type": RESPONSE_CHANNEL_MESSAGE_WITH_SOURCE, "data": data})
+
+
+def _relay(body: dict) -> dict:
+    sqs = boto3.client("sqs", region_name=AWS_REGION)
+    sqs.send_message(QueueUrl=INTERACTIONS_QUEUE_URL, MessageBody=json.dumps(body))
+    return _response(200, {"type": RESPONSE_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE})
+
+
+def _password_modal_response(custom_id: str, title: str) -> dict:
+    return _response(
+        200,
+        {
+            "type": RESPONSE_MODAL,
+            "data": {
+                "custom_id": custom_id,
+                "title": title,
+                "components": [
+                    {
+                        "type": 1,
+                        "components": [
+                            {
+                                "type": 4,
+                                "custom_id": "password",
+                                "label": "Password",
+                                "style": 1,
+                                "required": True,
+                                "max_length": 100,
+                            }
+                        ],
+                    }
+                ],
+            },
+        },
+    )
+
+
 def handler(event, context):
     if not _verify_signature(event):
         return {"statusCode": 401, "body": "invalid request signature"}
 
     body = json.loads(event.get("body") or "{}")
+    interaction_type = body.get("type")
 
-    if body.get("type") == PING:
-        return _response(200, {"type": PONG})
+    if interaction_type == TYPE_PING:
+        return _response(200, {"type": RESPONSE_PONG})
 
-    if body.get("type") == APPLICATION_COMMAND:
-        command_name = body["data"]["name"]
-        ec2 = boto3.client("ec2", region_name=AWS_REGION)
-        instance_id, instance_state = _find_instance(ec2)
+    if interaction_type not in (TYPE_APPLICATION_COMMAND, TYPE_MODAL_SUBMIT):
+        return _response(400, {"error": "unhandled interaction type"})
 
-        ephemeral = False
-        if instance_id is None:
-            message = f"No instance tagged Name={INSTANCE_TAG_NAME} found."
-            ephemeral = True
-        elif command_name == "wake":
-            ec2.start_instances(InstanceIds=[instance_id])
-            message = "Waking up the music bot instance… give it ~30s."
-        elif command_name == "sleep":
-            ec2.stop_instances(InstanceIds=[instance_id])
-            message = "Stopping the music bot instance."
-        elif command_name not in DIRECT_COMMANDS and instance_state != "running":
-            message = "The instance is asleep — run /wake first, then try again once it's up."
-            ephemeral = True
-        else:
-            # Not ours to handle -- relay to the bot over SQS and let it
-            # reply via the interaction-followup webhook once it's done.
-            sqs = boto3.client("sqs", region_name=AWS_REGION)
-            sqs.send_message(QueueUrl=INTERACTIONS_QUEUE_URL, MessageBody=json.dumps(body))
-            return _response(200, {"type": DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE})
+    command_name = body["data"]["name"] if interaction_type == TYPE_APPLICATION_COMMAND else None
 
-        data = {"content": message}
-        if ephemeral:
-            data["flags"] = EPHEMERAL
-        return _response(200, {"type": CHANNEL_MESSAGE_WITH_SOURCE, "data": data})
+    ec2 = boto3.client("ec2", region_name=AWS_REGION)
+    instance_id, instance_state = _find_instance(ec2)
+    if instance_id is None:
+        return _message_response(f"No instance tagged Name={INSTANCE_TAG_NAME} found.", ephemeral=True)
 
-    return _response(400, {"error": "unhandled interaction type"})
+    if interaction_type == TYPE_APPLICATION_COMMAND and command_name == "wake":
+        ec2.start_instances(InstanceIds=[instance_id])
+        return _message_response("Waking up the music bot instance… give it ~30s.")
+
+    if interaction_type == TYPE_APPLICATION_COMMAND and command_name == "sleep":
+        ec2.stop_instances(InstanceIds=[instance_id])
+        return _message_response("Stopping the music bot instance.")
+
+    if instance_state != "running":
+        return _message_response(
+            "The instance is asleep — run /wake first, then try again once it's up.",
+            ephemeral=True,
+        )
+
+    if interaction_type == TYPE_APPLICATION_COMMAND and command_name in MODAL_COMMANDS:
+        options = {opt["name"]: opt["value"] for opt in body["data"].get("options", [])}
+        if command_name == "connect":
+            slot_value = options.get("slot", "")
+            return _password_modal_response(f"connect:{slot_value}", f"Password for '{slot_value}'")
+        slotname_value = options.get("slotname", "")
+        return _password_modal_response(f"link:{slotname_value}", f"Set a password for '{slotname_value}'")
+
+    # Everything else that reaches here (disconnect, link-finish, delete-slot,
+    # and every MODAL_SUBMIT) needs the bot process itself -- relay it and let
+    # the bot reply via the interaction-followup webhook once it's done.
+    return _relay(body)

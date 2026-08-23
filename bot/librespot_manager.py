@@ -28,16 +28,19 @@ class LibrespotProcess:
 
     async def start(self) -> None:
         self.ensure_pipe()
+        # librespot uses Rust's env_logger, which only prints ERROR by
+        # default -- without RUST_LOG, auth failures etc. are silent.
+        env = {**os.environ, "RUST_LOG": "info"}
         self._proc = await asyncio.create_subprocess_exec(
             LIBRESPOT_BIN,
             "--name", self.slot.name,
             "--backend", "pipe",
             "--device", self.slot.pipe_path,
-            "--username", self.slot.username,
-            "--password", self.slot.password,
+            "--system-cache", self.slot.cache_dir,
             "--bitrate", "320",
             "--disable-audio-cache",
             "--initial-volume", "100",
+            env=env,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -47,7 +50,7 @@ class LibrespotProcess:
     async def _log_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
         async for line in self._proc.stderr:
-            log.debug("[%s] %s", self.slot.name, line.decode(errors="replace").rstrip())
+            log.info("[%s] %s", self.slot.name, line.decode(errors="replace").rstrip())
 
     async def stop(self) -> None:
         if self._proc and self._proc.returncode is None:

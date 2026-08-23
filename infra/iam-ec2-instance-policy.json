@@ -5,10 +5,16 @@
       "Sid": "SelfStopOnly",
       "Effect": "Allow",
       "Action": "ec2:StopInstances",
-      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*",
+      "Resource": "arn:aws:ec2:us-east-2:272973566676:instance/*",
       "Condition": {
         "StringEquals": { "ec2:ResourceTag/Name": "discord-music-bot" }
       }
+    },
+    {
+      "Sid": "ReadOwnSecret",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:discord-music-bot/credentials-*"
     }
   ]
 }

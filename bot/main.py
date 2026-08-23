@@ -35,25 +35,37 @@ async def connect(interaction: discord.Interaction, slot: app_commands.Choice[st
     guild = interaction.guild
     assert guild is not None
 
-    voice_client = guild.voice_client
-    if voice_client is None:
-        voice_client = await channel.connect()
-    elif voice_client.channel.id != channel.id:
-        await voice_client.move_to(channel)
+    # Voice handshake can take longer than Discord's 3s ack window, so defer
+    # immediately and reply via followup once everything is actually ready.
+    await interaction.response.defer()
 
-    if voice_client.is_playing():
-        voice_client.stop()
+    try:
+        voice_client = guild.voice_client
+        if voice_client is None:
+            voice_client = await channel.connect()
+        elif voice_client.channel.id != channel.id:
+            await voice_client.move_to(channel)
 
-    proc = librespot.get(slot.value)
-    pipe_path = proc.slot.pipe_path
-    source = discord.FFmpegPCMAudio(
-        source=pipe_path,
-        before_options="-f s16le -ar 44100 -ac 2",
-        options="-vn",
-    )
-    voice_client.play(source)
+        if voice_client.is_playing():
+            voice_client.stop()
 
-    await interaction.response.send_message(
+        proc = librespot.get(slot.value)
+        pipe_path = proc.slot.pipe_path
+        source = discord.FFmpegPCMAudio(
+            source=pipe_path,
+            before_options="-f s16le -ar 44100 -ac 2",
+            options="-vn",
+        )
+        voice_client.play(source)
+    except Exception:
+        log.exception("connect command failed")
+        await interaction.followup.send(
+            "Something went wrong connecting/starting playback — check the bot logs.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.followup.send(
         f"Connected. Control playback from Spotify Connect on device **{slot.value}**."
     )
 

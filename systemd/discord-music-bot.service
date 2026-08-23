@@ -1,0 +1,16 @@
+[Unit]
+Description=Discord Spotify Connect music bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=discordbot
+WorkingDirectory=/opt/discord-bot/bot
+EnvironmentFile=/opt/discord-bot/.env
+ExecStart=/opt/discord-bot/venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

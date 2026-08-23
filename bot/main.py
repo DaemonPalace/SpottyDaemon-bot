@@ -3,6 +3,7 @@ import logging
 import discord
 from discord import app_commands
 
+import ec2_control
 from commands import do_connect, do_disconnect
 from config import DISCORD_TOKEN, SLOTS
 from idle_monitor import IdleMonitor
@@ -44,6 +45,25 @@ async def disconnect(interaction: discord.Interaction):
     assert interaction.guild is not None
     content, ephemeral = await do_disconnect(interaction.guild)
     await interaction.response.send_message(content, ephemeral=ephemeral)
+
+
+# Registered here too (not just via infra/register-discord-commands.sh) so a
+# single tree.sync() defines all four commands together. Discord's bulk
+# command-overwrite endpoint replaces the *entire* command set on every call
+# -- registering wake/sleep separately silently deleted connect/disconnect,
+# and the next tree.sync() would have deleted wake/sleep right back. If this
+# handler ever actually fires (only possible via the gateway, i.e. no Lambda
+# Interactions Endpoint URL configured -- see interaction_relay.py's
+# docstring), the bot process is already up, so both are trivial.
+@tree.command(name="wake", description="Start the music bot instance (takes ~30s)")
+async def wake(interaction: discord.Interaction):
+    await interaction.response.send_message("Already running.", ephemeral=True)
+
+
+@tree.command(name="sleep", description="Stop the music bot instance")
+async def sleep(interaction: discord.Interaction):
+    await interaction.response.send_message("Stopping the music bot instance.")
+    ec2_control.stop_this_instance()
 
 
 @client.event

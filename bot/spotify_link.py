@@ -1,0 +1,230 @@
+"""Self-serve Spotify account linking for a free slot.
+
+librespot's built-in OAuth (`--enable-oauth`) uses Spotify's own client
+registration, which only accepts a loopback (127.0.0.1) redirect URI -- there
+is no way to make Spotify redirect a friend's browser straight back to a
+public EC2 address, so we can't just open a port and hand out a link.
+
+Instead this uses librespot's own documented fallback for exactly this
+headless/remote situation: start `librespot --enable-oauth` on the bot's box
+with its stdin piped, hand the friend the printed Spotify authorize URL, let
+them log in in their own browser. The final redirect (to
+http://127.0.0.1:<port>/login?code=...) fails to load in their browser since
+127.0.0.1 means their own machine, not the bot's -- but the URL itself is all
+librespot needs. The friend copies that failed URL out of their address bar
+and pastes it back via /link-finish; we write it to librespot's stdin, which
+completes the token exchange and writes credentials.json itself.
+
+This means no security-group/EC2-network changes are needed at all.
+"""
+
+import asyncio
+import logging
+import os
+import re
+import time
+from dataclasses import dataclass
+
+import config
+from librespot_manager import LibrespotManager
+from slot_store import SLOT_NAME_RE, SlotStore
+
+log = logging.getLogger("spotify_link")
+
+AUTHORIZE_URL_RE = re.compile(r"https://accounts\.spotify\.com/\S+")
+AUTHORIZE_URL_WAIT_SECONDS = 15
+CREDENTIALS_WAIT_SECONDS = 60
+CREDENTIALS_POLL_INTERVAL_SECONDS = 2
+
+
+@dataclass
+class PendingLink:
+    slot_index: int
+    slot_name: str
+    password: str
+    started_at: float
+    process: asyncio.subprocess.Process
+
+
+class LinkManager:
+    def __init__(self, store: SlotStore, librespot: LibrespotManager):
+        self.store = store
+        self.librespot = librespot
+        self._pending: dict[str, PendingLink] = {}
+        self._sweep_task: asyncio.Task | None = None
+
+    def start(self) -> None:
+        self._sweep_task = asyncio.create_task(self._sweep_loop())
+
+    def stop(self) -> None:
+        if self._sweep_task:
+            self._sweep_task.cancel()
+
+    async def _sweep_loop(self) -> None:
+        while True:
+            await asyncio.sleep(30)
+            now = time.monotonic()
+            expired = [
+                user_id
+                for user_id, pending in self._pending.items()
+                if now - pending.started_at > config.LINK_TIMEOUT_SECONDS
+            ]
+            for user_id in expired:
+                log.warning("link for user %s timed out, freeing slot", user_id)
+                await self._abort(user_id)
+
+    async def _abort(self, user_id: str) -> None:
+        pending = self._pending.pop(user_id, None)
+        if pending is None:
+            return
+        await self._kill(pending.process)
+        await self.store.reset(pending.slot_index)
+
+    @staticmethod
+    async def _kill(process: asyncio.subprocess.Process) -> None:
+        if process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                process.kill()
+
+    def has_pending(self, user_id: str) -> bool:
+        return user_id in self._pending
+
+    async def start_link(self, user_id: str, slot_name: str, password: str) -> tuple[str, bool]:
+        """Returns (message, success)."""
+        slot_name = slot_name.strip().lower()
+
+        if user_id in self._pending:
+            return (
+                "You already have a link in progress. Finish it with "
+                "/link-finish, or wait 5 minutes for it to expire and try again.",
+                False,
+            )
+        if not SLOT_NAME_RE.match(slot_name):
+            return "Slot name must be lowercase letters, numbers, and hyphens only (max 32 chars).", False
+        if self.store.get_by_name(slot_name) is not None:
+            return f"Slot name '{slot_name}' is already taken.", False
+
+        slot_meta = self.store.find_free_slot()
+        if slot_meta is None:
+            return "All slots are in use -- ask the bot owner to free one up with /delete-slot.", False
+
+        index = slot_meta.index
+        await self.store.set_linking(index)
+
+        spotify_slot = self.librespot.slot_by_index(index)
+        assert spotify_slot is not None
+        os.makedirs(spotify_slot.cache_dir, exist_ok=True)
+
+        env = {**os.environ, "RUST_LOG": "info"}
+        try:
+            process = await asyncio.create_subprocess_exec(
+                config.LIBRESPOT_BIN,
+                "--name", spotify_slot.name,
+                "--enable-oauth",
+                "--oauth-port", str(config.LINK_OAUTH_PORT),
+                "--system-cache", spotify_slot.cache_dir,
+                "--backend", "pipe",
+                "--device", os.path.join(config.PIPE_DIR, f"slot{index}-linking.pcm"),
+                env=env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except Exception:
+            log.exception("failed to start librespot for linking")
+            await self.store.reset(index)
+            return "Couldn't start the Spotify login flow -- check the bot logs.", False
+
+        url = await self._read_authorize_url(process)
+        if url is None:
+            await self._kill(process)
+            await self.store.reset(index)
+            return "Couldn't start the Spotify login flow -- check the bot logs.", False
+
+        self._pending[user_id] = PendingLink(
+            slot_index=index,
+            slot_name=slot_name,
+            password=password,
+            started_at=time.monotonic(),
+            process=process,
+        )
+        return (
+            f"**Step 1:** open this link and log in with the Spotify account for **{slot_name}**:\n"
+            f"{url}\n\n"
+            "**Step 2:** after logging in, your browser will fail to load the page it redirects "
+            "to next -- that's expected. Copy the FULL url from your browser's address bar at "
+            "that point (it starts with `http://127.0.0.1`).\n\n"
+            "**Step 3:** run `/link-finish` and paste that url in, within 5 minutes.",
+            True,
+        )
+
+    async def _read_authorize_url(self, process: asyncio.subprocess.Process) -> str | None:
+        assert process.stdout is not None
+        try:
+            async with asyncio.timeout(AUTHORIZE_URL_WAIT_SECONDS):
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        return None
+                    match = AUTHORIZE_URL_RE.search(line.decode(errors="replace"))
+                    if match:
+                        return match.group(0)
+        except TimeoutError:
+            return None
+
+    async def finish_link(self, user_id: str, pasted_url: str) -> tuple[str, bool]:
+        pending = self._pending.get(user_id)
+        if pending is None:
+            return "No link in progress. Run /link first.", False
+
+        process = pending.process
+        if process.stdin is None or process.returncode is not None:
+            self._pending.pop(user_id, None)
+            await self.store.reset(pending.slot_index)
+            return "That login session expired -- run /link again.", False
+
+        try:
+            process.stdin.write((pasted_url.strip() + "\n").encode())
+            await process.stdin.drain()
+        except Exception:
+            log.exception("failed writing pasted redirect url to librespot stdin")
+            self._pending.pop(user_id, None)
+            await self._kill(process)
+            await self.store.reset(pending.slot_index)
+            return "Something went wrong finishing the login -- run /link again.", False
+
+        spotify_slot = self.librespot.slot_by_index(pending.slot_index)
+        assert spotify_slot is not None
+        credentials_path = os.path.join(spotify_slot.cache_dir, "credentials.json")
+
+        success = await self._wait_for_credentials(credentials_path)
+        self._pending.pop(user_id, None)
+        await self._kill(process)
+
+        if not success:
+            await self.store.reset(pending.slot_index)
+            return (
+                "Login didn't complete -- the pasted url may have been wrong, expired, or "
+                "already used. Run /link again to retry.",
+                False,
+            )
+
+        await self.store.claim(pending.slot_index, pending.slot_name, pending.password, user_id)
+        await self.librespot.start_one(spotify_slot)
+        return (
+            f"Linked! Slot **{pending.slot_name}** is ready -- "
+            f"use `/connect {pending.slot_name}` with the password you set.",
+            True,
+        )
+
+    @staticmethod
+    async def _wait_for_credentials(credentials_path: str) -> bool:
+        deadline = time.monotonic() + CREDENTIALS_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            if os.path.exists(credentials_path):
+                return True
+            await asyncio.sleep(CREDENTIALS_POLL_INTERVAL_SECONDS)
+        return os.path.exists(credentials_path)

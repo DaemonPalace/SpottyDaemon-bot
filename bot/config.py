@@ -57,8 +57,10 @@ MAX_SLOTS = int(os.environ.get("MAX_SLOTS", "5"))
 # module docstring) so this never needs to be reachable from outside the box.
 LINK_OAUTH_PORT = int(os.environ.get("LINK_OAUTH_PORT", "5588"))
 # How long a friend has between /link and finishing with /link-finish before
-# the slot reverts to free and they have to start over.
-LINK_TIMEOUT_SECONDS = int(os.environ.get("LINK_TIMEOUT_SECONDS", "300"))
+# the slot reverts to free and they have to start over. Generous on purpose
+# -- this covers actually reading the instructions, opening Spotify, logging
+# in (possibly through 2FA), and coming back to paste the url.
+LINK_TIMEOUT_SECONDS = int(os.environ.get("LINK_TIMEOUT_SECONDS", "900"))
 
 
 @dataclass(frozen=True)

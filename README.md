@@ -60,16 +60,19 @@ for any of this.
 1. A friend runs `/link <slotname>` (lowercase letters/numbers/hyphens, e.g. `alices-jams`) and sets a password in the popup that appears.
 2. The bot replies (ephemerally) with a Spotify login link and instructions. They log in with the Spotify account they want to use.
 3. After logging in, Spotify redirects their browser to `http://127.0.0.1:<port>/...` — this fails to load (expected, since `127.0.0.1` means *their* machine, not the bot's), but the failed url in the address bar is what librespot needs.
-4. They copy that url and run `/link-finish <url>` within 5 minutes to complete linking.
+4. They copy that url and run `/link-finish <url>` within LINK_TIMEOUT_SECONDS (default 15 min) to complete linking.
 5. Once linked, anyone can `/connect <slotname>` and enter the slot's password in the popup to start streaming it.
 
 This works without exposing any port on the EC2 instance: librespot's own
 OAuth client only accepts loopback redirect URIs, so there's no way to make
 Spotify redirect a remote browser straight back to a public address anyway.
-The bot instead runs librespot's `--enable-oauth` locally with its stdin
-piped, and feeds it the pasted-back redirect url itself — see
-`bot/spotify_link.py` for details. `/delete-slot <name>` (requires the
-Manage Server permission) wipes a slot's credentials and frees it back up.
+`--enable-oauth` runs a real local HTTP server on `127.0.0.1:<port>`, actively
+waiting for that exact callback request — since the bot process runs on the
+same box, it just re-issues that request to itself using the query string
+from the pasted-back url, which librespot's server receives exactly as if
+the friend's own browser had reached it. See `bot/spotify_link.py` for
+details. `/delete-slot <name>` (requires the Manage Server permission) wipes
+a slot's credentials and frees it back up.
 
 ## Idle shutdown
 

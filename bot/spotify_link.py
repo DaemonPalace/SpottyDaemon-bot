@@ -6,14 +6,19 @@ is no way to make Spotify redirect a friend's browser straight back to a
 public EC2 address, so we can't just open a port and hand out a link.
 
 Instead this uses librespot's own documented fallback for exactly this
-headless/remote situation: start `librespot --enable-oauth` on the bot's box
-with its stdin piped, hand the friend the printed Spotify authorize URL, let
-them log in in their own browser. The final redirect (to
-http://127.0.0.1:<port>/login?code=...) fails to load in their browser since
-127.0.0.1 means their own machine, not the bot's -- but the URL itself is all
-librespot needs. The friend copies that failed URL out of their address bar
-and pastes it back via /link-finish; we write it to librespot's stdin, which
-completes the token exchange and writes credentials.json itself.
+headless/remote situation: start `librespot --enable-oauth` on the bot's box,
+hand the friend the printed Spotify authorize URL, let them log in in their
+own browser. The final redirect (to http://127.0.0.1:<port>/login?code=...)
+fails to load in their browser since 127.0.0.1 means their own machine, not
+the bot's -- but librespot itself is running a real HTTP server on that
+loopback port, actively waiting for that exact request (confirmed by hand:
+running librespot --enable-oauth and curling 127.0.0.1:<port>/login?code=...
+gets back "Go back to your terminal :)" and completes the exchange -- it does
+NOT read the callback from stdin, despite what some docs suggest). The friend
+copies that failed url out of their address bar and pastes it back via
+/link-finish; since the bot process runs on the same box as librespot, it
+just re-issues that same GET request to 127.0.0.1 itself, which librespot's
+server receives exactly as if the friend's own browser had reached it.
 
 This means no security-group/EC2-network changes are needed at all.
 """
@@ -23,7 +28,10 @@ import logging
 import os
 import re
 import time
+import urllib.parse
 from dataclasses import dataclass
+
+import aiohttp
 
 import config
 from librespot_manager import LibrespotManager
@@ -129,7 +137,7 @@ class LinkManager:
                 "--backend", "pipe",
                 "--device", os.path.join(config.PIPE_DIR, f"slot{index}-linking.pcm"),
                 env=env,
-                stdin=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
             )
@@ -157,7 +165,8 @@ class LinkManager:
             "**Step 2:** after logging in, your browser will fail to load the page it redirects "
             "to next -- that's expected. Copy the FULL url from your browser's address bar at "
             "that point (it starts with `http://127.0.0.1`).\n\n"
-            "**Step 3:** run `/link-finish` and paste that url in, within 5 minutes.",
+            f"**Step 3:** run `/link-finish` and paste that url in, within "
+            f"{config.LINK_TIMEOUT_SECONDS // 60} minutes.",
             True,
         )
 
@@ -181,16 +190,26 @@ class LinkManager:
             return "No link in progress. Run /link first.", False
 
         process = pending.process
-        if process.stdin is None or process.returncode is not None:
+        if process.returncode is not None:
             self._pending.pop(user_id, None)
             await self.store.reset(pending.slot_index)
             return "That login session expired -- run /link again.", False
 
+        query = urllib.parse.urlparse(pasted_url.strip()).query
+        if not query:
+            return (
+                "That doesn't look like the right url -- make sure you copied the FULL address "
+                "from your browser's address bar, including the `?code=...` part.",
+                False,
+            )
+
+        callback_url = f"http://127.0.0.1:{config.LINK_OAUTH_PORT}/login?{query}"
         try:
-            process.stdin.write((pasted_url.strip() + "\n").encode())
-            await process.stdin.drain()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(callback_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    await resp.read()
         except Exception:
-            log.exception("failed writing pasted redirect url to librespot stdin")
+            log.exception("failed to replay oauth callback to librespot")
             self._pending.pop(user_id, None)
             await self._kill(process)
             await self.store.reset(pending.slot_index)

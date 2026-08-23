@@ -28,9 +28,20 @@ slash command routed through a small Lambda.
 
 ## Lambda (wake/sleep) setup
 
-1. From your own machine: `DISCORD_PUBLIC_KEY=<from the Discord developer portal> infra/deploy-lambda.sh` — builds `lambda/wake_sleep.py` + deps, creates the Lambda's IAM role, deploys the function, and creates a public Function URL with both resource-policy permissions it needs (`lambda:InvokeFunctionUrl` *and* `lambda:InvokeFunction` — AWS requires both as of Oct 2025; missing either gives a 403 `AccessDeniedException` before your code ever runs). Re-run any time `wake_sleep.py` changes.
-2. Paste the Function URL it prints into the Discord app's "Interactions Endpoint URL" field. Discord's auth type NONE is intentional — Discord itself can't sign AWS SigV4, so the Ed25519 signature check inside the handler is what actually authenticates requests.
-3. `DISCORD_APPLICATION_ID=<app id> DISCORD_BOT_TOKEN=<bot token> infra/register-discord-commands.sh` — registers the global `/wake` and `/sleep` slash commands. Global commands can take up to an hour to show up in a server; re-run any time you change a command's name/description.
+Discord delivers interactions to either the bot's gateway connection or a
+single HTTP "Interactions Endpoint URL" — never both. Once that endpoint is
+set (required so `/wake` works while the instance, and therefore the bot
+process, is stopped), Discord stops sending `/connect`/`/disconnect` over
+the gateway too. `lambda/wake_sleep.py` handles `/wake`/`/sleep` itself and
+relays everything else onto an SQS queue; `bot/interaction_relay.py`
+long-polls that queue and replies via Discord's webhook-followup API. No
+inbound network exposure needed on the EC2 side for any of this.
+
+1. From your own machine: `infra/create-interaction-queue.sh` — creates the relay queue, prints its URL.
+2. Set `INTERACTIONS_QUEUE_URL=<that URL>` in `/opt/discord-bot/.env` on the instance.
+3. From your own machine: `DISCORD_PUBLIC_KEY=<from the Discord developer portal> INTERACTIONS_QUEUE_URL=<that URL> infra/deploy-lambda.sh` — builds `lambda/wake_sleep.py` + deps, creates the Lambda's IAM role, deploys the function, and creates a public Function URL with both resource-policy permissions it needs (`lambda:InvokeFunctionUrl` *and* `lambda:InvokeFunction` — AWS requires both as of Oct 2025; missing either gives a 403 `AccessDeniedException` before your code ever runs). Re-run any time `wake_sleep.py` changes.
+4. Paste the Function URL it prints into the Discord app's "Interactions Endpoint URL" field. Discord's auth type NONE is intentional — Discord itself can't sign AWS SigV4, so the Ed25519 signature check inside the handler is what actually authenticates requests.
+5. `DISCORD_APPLICATION_ID=<app id> DISCORD_BOT_TOKEN=<bot token> infra/register-discord-commands.sh` — registers the global `/wake` and `/sleep` slash commands. `/connect`/`/disconnect` are registered separately, by the bot itself on startup (`tree.sync()` in `main.py`) — command *registration* is unaffected by the gateway/webhook split above, only interaction *delivery* is. Global commands can take up to an hour to show up in a server.
 
 ## Idle shutdown
 

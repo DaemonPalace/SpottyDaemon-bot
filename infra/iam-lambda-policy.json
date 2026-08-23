@@ -15,6 +15,12 @@
       "Condition": {
         "StringEquals": { "ec2:ResourceTag/Name": "discord-music-bot" }
       }
+    },
+    {
+      "Sid": "RelayInteractionsToBot",
+      "Effect": "Allow",
+      "Action": "sqs:SendMessage",
+      "Resource": "arn:aws:sqs:REGION:ACCOUNT_ID:discord-music-bot-interactions"
     }
   ]
 }

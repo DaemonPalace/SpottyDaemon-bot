@@ -3,8 +3,10 @@ import logging
 import discord
 from discord import app_commands
 
+from commands import do_connect, do_disconnect
 from config import DISCORD_TOKEN, SLOTS
 from idle_monitor import IdleMonitor
+from interaction_relay import InteractionRelay
 from librespot_manager import LibrespotManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -18,67 +20,30 @@ tree = app_commands.CommandTree(client)
 
 librespot = LibrespotManager(SLOTS)
 idle_monitor = IdleMonitor(client)
+interaction_relay = InteractionRelay(client, librespot)
 
 SLOT_NAMES = [slot.name for slot in SLOTS]
 
 
+# These only fire over the gateway, which only happens when the Discord app
+# has no Interactions Endpoint URL configured (i.e. local testing without
+# the Lambda wired up). In production, Discord routes /connect and
+# /disconnect to interaction_relay.py instead -- see its module docstring.
 @tree.command(name="connect", description="Join your voice channel and stream a Spotify Connect slot")
 @app_commands.describe(slot="Which Spotify account slot to stream (1 or 2)")
 @app_commands.choices(slot=[app_commands.Choice(name=name, value=name) for name in SLOT_NAMES])
 async def connect(interaction: discord.Interaction, slot: app_commands.Choice[str]):
-    member = interaction.user
-    if not isinstance(member, discord.Member) or member.voice is None or member.voice.channel is None:
-        await interaction.response.send_message("Join a voice channel first.", ephemeral=True)
-        return
-
-    channel = member.voice.channel
-    guild = interaction.guild
-    assert guild is not None
-
-    # Voice handshake can take longer than Discord's 3s ack window, so defer
-    # immediately and reply via followup once everything is actually ready.
+    assert isinstance(interaction.user, discord.Member) and interaction.guild is not None
     await interaction.response.defer()
-
-    try:
-        voice_client = guild.voice_client
-        if voice_client is None:
-            voice_client = await channel.connect()
-        elif voice_client.channel.id != channel.id:
-            await voice_client.move_to(channel)
-
-        if voice_client.is_playing():
-            voice_client.stop()
-
-        proc = librespot.get(slot.value)
-        pipe_path = proc.slot.pipe_path
-        source = discord.FFmpegPCMAudio(
-            source=pipe_path,
-            before_options="-f s16le -ar 44100 -ac 2",
-            options="-vn",
-        )
-        voice_client.play(source)
-    except Exception:
-        log.exception("connect command failed")
-        await interaction.followup.send(
-            "Something went wrong connecting/starting playback — check the bot logs.",
-            ephemeral=True,
-        )
-        return
-
-    await interaction.followup.send(
-        f"Connected. Control playback from Spotify Connect on device **{slot.value}**."
-    )
+    content, ephemeral = await do_connect(interaction.guild, interaction.user, slot.value, librespot)
+    await interaction.followup.send(content, ephemeral=ephemeral)
 
 
 @tree.command(name="disconnect", description="Leave the voice channel")
 async def disconnect(interaction: discord.Interaction):
-    guild = interaction.guild
-    assert guild is not None
-    if guild.voice_client is not None:
-        await guild.voice_client.disconnect(force=True)
-        await interaction.response.send_message("Disconnected.")
-    else:
-        await interaction.response.send_message("Not connected.", ephemeral=True)
+    assert interaction.guild is not None
+    content, ephemeral = await do_disconnect(interaction.guild)
+    await interaction.response.send_message(content, ephemeral=ephemeral)
 
 
 @client.event
@@ -87,6 +52,7 @@ async def on_ready():
     await librespot.start_all()
     await tree.sync()
     idle_monitor.start()
+    interaction_relay.start()
 
 
 @client.event

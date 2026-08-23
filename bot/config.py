@@ -32,6 +32,8 @@ def _get(key: str) -> str:
 
 
 DISCORD_TOKEN = _get("DISCORD_TOKEN")
+# SQS queue lambda/wake_sleep.py relays interactions to (see interaction_relay.py).
+INTERACTIONS_QUEUE_URL = os.environ["INTERACTIONS_QUEUE_URL"]
 IDLE_SHUTDOWN_MINUTES = int(os.environ.get("IDLE_SHUTDOWN_MINUTES", "20"))
 IDLE_CHECK_INTERVAL_SECONDS = int(os.environ.get("IDLE_CHECK_INTERVAL_SECONDS", "30"))
 # Set to "false" to disable self-stopping the EC2 instance (e.g. local testing).

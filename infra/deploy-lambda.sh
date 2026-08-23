@@ -6,7 +6,8 @@
 # updates code/config in place.
 #
 # Required env vars:
-#   DISCORD_PUBLIC_KEY   from the Discord developer portal (General Information page)
+#   DISCORD_PUBLIC_KEY     from the Discord developer portal (General Information page)
+#   INTERACTIONS_QUEUE_URL  from infra/create-interaction-queue.sh
 # Optional:
 #   AWS_REGION            default us-east-2
 #   FUNCTION_NAME          default discord-music-bot-wake-sleep
@@ -19,6 +20,7 @@ FUNCTION_NAME="${FUNCTION_NAME:-discord-music-bot-wake-sleep}"
 ROLE_NAME="${ROLE_NAME:-discord-music-bot-lambda-role}"
 INSTANCE_TAG_NAME="${INSTANCE_TAG_NAME:-discord-music-bot}"
 DISCORD_PUBLIC_KEY="${DISCORD_PUBLIC_KEY:?set DISCORD_PUBLIC_KEY (Discord developer portal -> General Information)}"
+INTERACTIONS_QUEUE_URL="${INTERACTIONS_QUEUE_URL:?set INTERACTIONS_QUEUE_URL (run infra/create-interaction-queue.sh first)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -56,6 +58,10 @@ aws iam put-role-policy \
   --policy-document "file://$BUILD_DIR/lambda-policy-resolved.json" >/dev/null
 ROLE_ARN="arn:aws:iam::${ACCOUNT_ID}:role/${ROLE_NAME}"
 
+# 512MB, not the 128MB minimum: Lambda CPU scales with memory, and a cold
+# start building the boto3 EC2 client (large service model) at 128MB took
+# ~4s -- past Discord's 3s ack window, causing "The application did not
+# respond".
 echo "== function =="
 if aws lambda get-function --function-name "$FUNCTION_NAME" --region "$AWS_REGION" >/dev/null 2>&1; then
   aws lambda update-function-code \
@@ -65,7 +71,8 @@ if aws lambda get-function --function-name "$FUNCTION_NAME" --region "$AWS_REGIO
   aws lambda wait function-updated --function-name "$FUNCTION_NAME" --region "$AWS_REGION"
   aws lambda update-function-configuration \
     --function-name "$FUNCTION_NAME" \
-    --environment "Variables={DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY,INSTANCE_TAG_NAME=$INSTANCE_TAG_NAME}" \
+    --memory-size 512 \
+    --environment "Variables={DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY,INSTANCE_TAG_NAME=$INSTANCE_TAG_NAME,INTERACTIONS_QUEUE_URL=$INTERACTIONS_QUEUE_URL}" \
     --region "$AWS_REGION" >/dev/null
   aws lambda wait function-updated --function-name "$FUNCTION_NAME" --region "$AWS_REGION"
   echo "-> updated $FUNCTION_NAME"
@@ -78,9 +85,9 @@ else
       --handler wake_sleep.handler \
       --role "$ROLE_ARN" \
       --timeout 10 \
-      --memory-size 128 \
+      --memory-size 512 \
       --zip-file "fileb://$ZIP_PATH" \
-      --environment "Variables={DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY,INSTANCE_TAG_NAME=$INSTANCE_TAG_NAME}" \
+      --environment "Variables={DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY,INSTANCE_TAG_NAME=$INSTANCE_TAG_NAME,INTERACTIONS_QUEUE_URL=$INTERACTIONS_QUEUE_URL}" \
       --region "$AWS_REGION" >/dev/null 2>&1; then
       break
     fi

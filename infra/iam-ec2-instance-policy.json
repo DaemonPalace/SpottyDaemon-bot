@@ -15,6 +15,12 @@
       "Effect": "Allow",
       "Action": "secretsmanager:GetSecretValue",
       "Resource": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:discord-music-bot/credentials-*"
+    },
+    {
+      "Sid": "PollInteractionQueue",
+      "Effect": "Allow",
+      "Action": ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"],
+      "Resource": "arn:aws:sqs:REGION:ACCOUNT_ID:discord-music-bot-interactions"
     }
   ]
 }

@@ -22,6 +22,21 @@ distorts at the start" symptom. Keeping a reader on the pipe at all times
 (discarding data whenever no real playback is attached, pausing only while
 ffmpeg is actually consuming it for Discord) fixes both: librespot's writer
 never blocks, and there's never a backlog left over to play out.
+
+The idle drain deliberately consumes at roughly real-time PCM pace, not as
+fast as the OS will hand us bytes. A first version drained greedily (as
+soon as data was available), which removed all backpressure on librespot's
+writer whenever the drain was active -- if ffmpeg died mid-pause and
+draining resumed, librespot would then write (and our drain would swallow)
+an entire track in about a second instead of its real duration, since
+nothing was pacing it to real time anymore. Observed in production as a
+"skips every track instantly" storm that also triggered Spotify-side
+`Service unavailable { audio key error }` responses -- almost certainly
+Spotify's own rate limiting reacting to that burst of rapid-fire requests.
+Pacing the idle drain to the same ~176400 bytes/sec (44.1kHz stereo s16le)
+a real listener would consume keeps librespot's writer from ever blocking
+(never fills for more than one tick) while still throttling it to a
+realistic rate when nobody's actually listening.
 """
 
 import asyncio
@@ -32,7 +47,11 @@ from config import LIBRESPOT_BIN, PIPE_DIR, SpotifySlot
 
 log = logging.getLogger("librespot")
 
-_DRAIN_CHUNK_SIZE = 65536
+# Matches librespot's pipe backend output format (also what commands.py's
+# ffmpeg invocation assumes via `-ar 44100 -ac 2`): 16-bit stereo PCM.
+_PCM_BYTES_PER_SECOND = 44100 * 2 * 2
+_DRAIN_TICK_SECONDS = 0.1
+_DRAIN_CHUNK_SIZE = int(_PCM_BYTES_PER_SECOND * _DRAIN_TICK_SECONDS)
 
 
 class LibrespotProcess:
@@ -40,6 +59,7 @@ class LibrespotProcess:
         self.slot = slot
         self._proc: asyncio.subprocess.Process | None = None
         self._drain_fd: int | None = None
+        self._drain_task: asyncio.Task | None = None
         self._draining = True
 
     def ensure_pipe(self) -> None:
@@ -72,30 +92,35 @@ class LibrespotProcess:
 
     def _open_drain_reader(self) -> None:
         """Opens our own permanent read end on the pipe, non-blocking, and
-        registers it with the event loop. This must happen BEFORE librespot
-        starts -- a FIFO opened for writing blocks until a reader exists, so
-        without this librespot's own open() would block until the first
-        /connect ever happened. A no-op if we already have one open (e.g.
-        restart_if_dead() restarting a crashed librespot -- the pipe reader
-        itself doesn't need to restart, only the writer)."""
+        starts the paced background task that drains it. This must happen
+        BEFORE librespot starts -- a FIFO opened for writing blocks until a
+        reader exists, so without this librespot's own open() would block
+        until the first /connect ever happened. A no-op if we already have
+        one open (e.g. restart_if_dead() restarting a crashed librespot --
+        the pipe reader itself doesn't need to restart, only the writer)."""
         if self._drain_fd is not None:
             return
         self._drain_fd = os.open(self.slot.pipe_path, os.O_RDONLY | os.O_NONBLOCK)
-        asyncio.get_running_loop().add_reader(self._drain_fd, self._on_pipe_readable)
+        self._drain_task = asyncio.create_task(self._drain_loop())
 
-    def _on_pipe_readable(self) -> None:
-        # Only actually consume bytes while nothing else (ffmpeg, via
-        # discord.py) is attached -- pause_draining() stops this without
-        # closing the fd, so librespot never sees a gap in readers even
-        # while ffmpeg is the one actually consuming the audio.
-        if not self._draining or self._drain_fd is None:
-            return
-        try:
-            os.read(self._drain_fd, _DRAIN_CHUNK_SIZE)
-        except BlockingIOError:
-            pass
-        except OSError:
-            log.exception("error draining pipe for slot %s", self.slot.name)
+    async def _drain_loop(self) -> None:
+        assert self._drain_fd is not None
+        fd = self._drain_fd
+        while True:
+            await asyncio.sleep(_DRAIN_TICK_SECONDS)
+            # Only actually consume bytes while nothing else (ffmpeg, via
+            # discord.py) is attached -- pause_draining() stops this
+            # without closing the fd, so librespot never sees a gap in
+            # readers even while ffmpeg is the one actually consuming the
+            # audio for real playback.
+            if not self._draining:
+                continue
+            try:
+                os.read(fd, _DRAIN_CHUNK_SIZE)
+            except BlockingIOError:
+                pass
+            except OSError:
+                log.exception("error draining pipe for slot %s", self.slot.name)
 
     def pause_draining(self) -> None:
         """Call right before attaching a real (ffmpeg) reader for playback,
@@ -119,8 +144,10 @@ class LibrespotProcess:
                 await asyncio.wait_for(self._proc.wait(), timeout=5)
             except asyncio.TimeoutError:
                 self._proc.kill()
+        if self._drain_task is not None:
+            self._drain_task.cancel()
+            self._drain_task = None
         if self._drain_fd is not None:
-            asyncio.get_running_loop().remove_reader(self._drain_fd)
             os.close(self._drain_fd)
             self._drain_fd = None
 

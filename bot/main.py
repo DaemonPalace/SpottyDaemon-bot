@@ -4,7 +4,7 @@ import discord
 from discord import app_commands
 
 import ec2_control
-from commands import do_connect, do_delete_slot, do_disconnect, do_link, do_link_finish
+from commands import do_connect, do_delete_slot, do_disconnect, do_link, do_link_finish, forget_session
 from config import DISCORD_TOKEN, SLOTS
 from idle_monitor import IdleMonitor
 from interaction_relay import InteractionRelay
@@ -139,6 +139,7 @@ async def on_voice_state_update(member, before, after):
         return
     channel = voice_client.channel
     if len([m for m in channel.members if not m.bot]) == 0:
+        forget_session(guild.id)
         await voice_client.disconnect(force=True)
 
 

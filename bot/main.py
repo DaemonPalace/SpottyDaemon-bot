@@ -4,7 +4,15 @@ import discord
 from discord import app_commands
 
 import ec2_control
-from commands import do_connect, do_delete_slot, do_disconnect, do_link, do_link_finish, forget_session
+from commands import (
+    do_connect,
+    do_delete_slot,
+    do_disconnect,
+    do_link,
+    do_link_finish,
+    do_reconnect,
+    forget_session,
+)
 from config import DISCORD_TOKEN, SLOTS
 from idle_monitor import IdleMonitor
 from interaction_relay import InteractionRelay
@@ -59,6 +67,21 @@ async def connect(interaction: discord.Interaction, slot: str):
     async def handle_submit(modal_interaction: discord.Interaction, password: str):
         await modal_interaction.response.defer(ephemeral=True)
         content, ephemeral = await do_connect(guild, member, slot, password, librespot, slot_store)
+        await modal_interaction.followup.send(content, ephemeral=ephemeral)
+
+    await interaction.response.send_modal(PasswordModal(f"Password for '{slot}'", handle_submit))
+
+
+@tree.command(name="reconnect", description="Force a full disconnect+reconnect for a slot (fixes stuck playback)")
+@app_commands.describe(slot="Which slot to reconnect")
+async def reconnect(interaction: discord.Interaction, slot: str):
+    assert isinstance(interaction.user, discord.Member) and interaction.guild is not None
+    guild = interaction.guild
+    member = interaction.user
+
+    async def handle_submit(modal_interaction: discord.Interaction, password: str):
+        await modal_interaction.response.defer(ephemeral=True)
+        content, ephemeral = await do_reconnect(guild, member, slot, password, librespot, slot_store)
         await modal_interaction.followup.send(content, ephemeral=ephemeral)
 
     await interaction.response.send_modal(PasswordModal(f"Password for '{slot}'", handle_submit))

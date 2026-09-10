@@ -56,7 +56,7 @@ DIRECT_COMMANDS = {"wake", "sleep"}
 # These are answered with a MODAL directly instead of being relayed -- see
 # module docstring. Everything else that needs the bot running (disconnect,
 # link-finish, delete-slot, and any MODAL_SUBMIT) goes over SQS as before.
-MODAL_COMMANDS = {"connect", "link"}
+MODAL_COMMANDS = {"connect", "reconnect", "link"}
 
 
 def _find_instance(ec2) -> tuple[str, str] | tuple[None, None]:
@@ -168,9 +168,11 @@ def handler(event, context):
 
     if interaction_type == TYPE_APPLICATION_COMMAND and command_name in MODAL_COMMANDS:
         options = {opt["name"]: opt["value"] for opt in body["data"].get("options", [])}
-        if command_name == "connect":
+        if command_name in ("connect", "reconnect"):
             slot_value = options.get("slot", "")
-            return _password_modal_response(f"connect:{slot_value}", f"Password for '{slot_value}'")
+            return _password_modal_response(
+                f"{command_name}:{slot_value}", f"Password for '{slot_value}'"
+            )
         slotname_value = options.get("slotname", "")
         return _password_modal_response(f"link:{slotname_value}", f"Set a password for '{slotname_value}'")
 

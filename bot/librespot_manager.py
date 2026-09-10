@@ -39,9 +39,13 @@ a real listener would consume keeps librespot's writer from ever blocking
 realistic rate when nobody's actually listening.
 """
 
+import array
 import asyncio
+import fcntl
 import logging
 import os
+import termios
+import time
 
 from config import LIBRESPOT_BIN, PIPE_DIR, SpotifySlot
 
@@ -53,6 +57,18 @@ _PCM_BYTES_PER_SECOND = 44100 * 2 * 2
 _DRAIN_TICK_SECONDS = 0.1
 _DRAIN_CHUNK_SIZE = int(_PCM_BYTES_PER_SECOND * _DRAIN_TICK_SECONDS)
 
+# How often to sample the pipe's kernel buffer for diagnosing sync drift
+# (bot/commands.py issue: audio lagging/speeding up). FIONREAD works on
+# either end of a FIFO and doesn't consume data, so sampling our own
+# permanent drain fd tells us how much undelivered audio is backed up in
+# the pipe regardless of whether ffmpeg or our drain loop is the one
+# actually reading it right now.
+_BACKLOG_LOG_INTERVAL_SECONDS = 3.0
+# Backlog at or above this is logged at WARNING instead of DEBUG -- it means
+# real audible lag is building up (more than a second of undelivered audio
+# queued), not just normal jitter.
+_BACKLOG_WARN_SECONDS = 1.0
+
 
 class LibrespotProcess:
     def __init__(self, slot: SpotifySlot):
@@ -60,7 +76,14 @@ class LibrespotProcess:
         self._proc: asyncio.subprocess.Process | None = None
         self._drain_fd: int | None = None
         self._drain_task: asyncio.Task | None = None
+        self._monitor_task: asyncio.Task | None = None
         self._draining = True
+        self._started_monotonic: float | None = None
+        # Set when a real (ffmpeg) reader attaches, cleared once the monitor
+        # loop observes the first backlog bytes after that -- lets us log
+        # how long playback took to actually start producing audio.
+        self._attach_monotonic: float | None = None
+        self._first_bytes_logged = True
 
     def ensure_pipe(self) -> None:
         os.makedirs(PIPE_DIR, exist_ok=True)
@@ -87,6 +110,7 @@ class LibrespotProcess:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
         )
+        self._started_monotonic = time.monotonic()
         log.info("started librespot for slot %s (pid=%s)", self.slot.name, self._proc.pid)
         asyncio.create_task(self._log_stderr())
 
@@ -102,6 +126,7 @@ class LibrespotProcess:
             return
         self._drain_fd = os.open(self.slot.pipe_path, os.O_RDONLY | os.O_NONBLOCK)
         self._drain_task = asyncio.create_task(self._drain_loop())
+        self._monitor_task = asyncio.create_task(self._monitor_loop())
 
     async def _drain_loop(self) -> None:
         assert self._drain_fd is not None
@@ -126,11 +151,54 @@ class LibrespotProcess:
         """Call right before attaching a real (ffmpeg) reader for playback,
         so we stop competing with it for bytes."""
         self._draining = False
+        self._attach_monotonic = time.monotonic()
+        self._first_bytes_logged = False
 
     def resume_draining(self) -> None:
         """Call once playback stops for any reason (disconnect, error, the
         track/source ending) so librespot's writer never blocks again."""
         self._draining = True
+
+    def uptime_seconds(self) -> float:
+        if self._started_monotonic is None:
+            return 0.0
+        return time.monotonic() - self._started_monotonic
+
+    @staticmethod
+    def _pipe_backlog_bytes(fd: int) -> int | None:
+        """How many undelivered bytes are sitting in the pipe right now, or
+        None if that can't be determined (e.g. fd just closed)."""
+        try:
+            buf = array.array("i", [0])
+            fcntl.ioctl(fd, termios.FIONREAD, buf, True)
+            return buf[0]
+        except OSError:
+            return None
+
+    async def _monitor_loop(self) -> None:
+        """Diagnostic-only: periodically logs pipe backlog (source of the
+        "lags behind / speeds up" sync drift symptom -- see module
+        docstring) and, once per attach, how long it took for librespot to
+        actually start producing audio after ffmpeg attached."""
+        assert self._drain_fd is not None
+        fd = self._drain_fd
+        while True:
+            await asyncio.sleep(_BACKLOG_LOG_INTERVAL_SECONDS)
+            backlog = self._pipe_backlog_bytes(fd)
+            if backlog is None:
+                continue
+
+            if not self._first_bytes_logged and backlog > 0 and self._attach_monotonic is not None:
+                latency = time.monotonic() - self._attach_monotonic
+                log.info("slot %s: first audio bytes %.2fs after attach", self.slot.name, latency)
+                self._first_bytes_logged = True
+
+            backlog_seconds = backlog / _PCM_BYTES_PER_SECOND
+            log_fn = log.warning if backlog_seconds >= _BACKLOG_WARN_SECONDS else log.debug
+            log_fn(
+                "slot %s: pipe backlog=%.2fs (%d bytes) draining=%s librespot_uptime=%.0fs",
+                self.slot.name, backlog_seconds, backlog, self._draining, self.uptime_seconds(),
+            )
 
     async def _log_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None
@@ -147,6 +215,9 @@ class LibrespotProcess:
         if self._drain_task is not None:
             self._drain_task.cancel()
             self._drain_task = None
+        if self._monitor_task is not None:
+            self._monitor_task.cancel()
+            self._monitor_task = None
         if self._drain_fd is not None:
             os.close(self._drain_fd)
             self._drain_fd = None
@@ -159,6 +230,11 @@ class LibrespotManager:
     def __init__(self, slots: list[SpotifySlot]):
         self._all_slots = {slot.index: slot for slot in slots}
         self.processes: dict[str, LibrespotProcess] = {}
+        # Diagnostic-only: counts unplanned restarts per slot (librespot
+        # dying and getting revived by restart_if_dead()/a self-heal
+        # watchdog), keyed by slot name. Deliberate restarts (/reconnect,
+        # which stops the slot first) don't go through this path.
+        self._restart_counts: dict[str, int] = {}
 
     def slot_by_index(self, index: int) -> SpotifySlot | None:
         return self._all_slots.get(index)
@@ -179,6 +255,10 @@ class LibrespotManager:
         existing = self.processes.get(slot.name)
         if existing and existing.is_running():
             return
+        if existing is not None:
+            count = self._restart_counts.get(slot.name, 0) + 1
+            self._restart_counts[slot.name] = count
+            log.warning("restarting librespot for slot %s (restart #%d)", slot.name, count)
         proc = LibrespotProcess(slot)
         await proc.start()
         self.processes[slot.name] = proc

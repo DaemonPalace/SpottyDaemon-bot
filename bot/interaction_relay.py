@@ -25,7 +25,7 @@ import aiohttp
 import boto3
 import discord
 
-from commands import do_connect, do_delete_slot, do_disconnect, do_link, do_link_finish
+from commands import do_connect, do_delete_slot, do_disconnect, do_link, do_link_finish, do_reconnect
 from config import INTERACTIONS_QUEUE_URL
 from librespot_manager import LibrespotManager
 from slot_store import SlotStore
@@ -142,6 +142,8 @@ class InteractionRelay:
 
         if command_name == "connect":
             return await do_connect(guild, member, argument, password, self.librespot, self.store)
+        if command_name == "reconnect":
+            return await do_reconnect(guild, member, argument, password, self.librespot, self.store)
         if command_name == "link":
             return await do_link(str(member.id), argument, password, self.link_manager)
         return f"Unknown modal submission: {custom_id}", True

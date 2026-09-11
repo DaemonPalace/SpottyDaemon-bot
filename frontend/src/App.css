@@ -1,0 +1,135 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1216;
+  --panel: #171b21;
+  --border: #2a2f38;
+  --text: #e6e9ef;
+  --muted: #8b93a1;
+  --accent: #1db954;
+  --danger: #e5484d;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.screen {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 0.9rem;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+
+.form.inline {
+  flex-direction: row;
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+input {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 0.5rem;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+
+button {
+  background: var(--accent);
+  color: #06120a;
+  border: none;
+  padding: 0.55rem 1rem;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.danger {
+  background: var(--danger);
+  color: #1a0505;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+  margin: 1rem 0;
+}
+
+.slot-list {
+  list-style: none;
+  padding: 0;
+}
+
+.slot-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.slot-index {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.badge {
+  font-size: 0.75rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--border);
+  color: var(--muted);
+}
+
+.badge.running {
+  background: var(--accent);
+  color: #06120a;
+}
+
+.logs {
+  background: #05070a;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  max-height: 320px;
+  overflow-y: auto;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

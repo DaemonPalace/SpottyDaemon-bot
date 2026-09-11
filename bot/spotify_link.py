@@ -100,6 +100,12 @@ class LinkManager:
     def has_pending(self, user_id: str) -> bool:
         return user_id in self._pending
 
+    def pending_slot_index(self, user_id: str) -> int | None:
+        """For callers (bot/api.py) that need the slot a pending link will
+        claim before calling finish_link, which pops the pending entry."""
+        pending = self._pending.get(user_id)
+        return pending.slot_index if pending is not None else None
+
     async def start_link(self, user_id: str, slot_name: str, password: str) -> tuple[str, bool]:
         """Returns (message, success)."""
         slot_name = slot_name.strip().lower()

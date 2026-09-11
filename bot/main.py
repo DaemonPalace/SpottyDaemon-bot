@@ -44,7 +44,7 @@ idle_monitor = IdleMonitor(client, slot_store, host_controller)
 interaction_relay = (
     InteractionRelay(client, librespot, slot_store, link_manager) if INTERACTIONS_QUEUE_URL else None
 )
-diagnostics_api = DiagnosticsApi(client, librespot, slot_store)
+diagnostics_api = DiagnosticsApi(client, librespot, slot_store, link_manager, web_api_link_manager)
 
 
 class PasswordModal(discord.ui.Modal):

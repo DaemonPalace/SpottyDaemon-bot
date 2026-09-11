@@ -67,6 +67,11 @@ class SlotMetadata:
     # /link-web-api completes; wiped by reset() same as everything else.
     web_api_refresh_token: str | None = None
     web_api_linked_at: float | None = None
+    # Jam-mode shareable link token (bot/api.py, supervisor/proxy.py). None
+    # until the slot is linked (generated at claim time) or if explicitly
+    # revoked. Knowing this token IS the access control for Jam mode -- no
+    # password involved. Wiped by reset() same as everything else.
+    jam_token: str | None = None
 
 
 class SlotStore:
@@ -94,6 +99,7 @@ class SlotStore:
                     claimed_at=entry.get("claimed_at"),
                     web_api_refresh_token=entry.get("web_api_refresh_token"),
                     web_api_linked_at=entry.get("web_api_linked_at"),
+                    jam_token=entry.get("jam_token"),
                 )
         # A slot stuck "linking" from a previous process is stale -- the
         # transient OAuth subprocess that would have finished it is gone
@@ -115,6 +121,7 @@ class SlotStore:
                     "claimed_at": slot.claimed_at,
                     "web_api_refresh_token": slot.web_api_refresh_token,
                     "web_api_linked_at": slot.web_api_linked_at,
+                    "jam_token": slot.jam_token,
                 }
                 for slot in self._slots.values()
             }
@@ -170,6 +177,19 @@ class SlotStore:
             slot.web_api_refresh_token = refresh_token
             slot.web_api_linked_at = time.time()
             self._save_locked()
+
+    async def regenerate_jam_token(self, index: int) -> str:
+        async with self._lock:
+            token = secrets.token_urlsafe(24)
+            self._slots[index].jam_token = token
+            self._save_locked()
+            return token
+
+    def get_by_jam_token(self, token: str) -> SlotMetadata | None:
+        for slot in self._slots.values():
+            if slot.jam_token is not None and hmac.compare_digest(slot.jam_token, token):
+                return slot
+        return None
 
     async def reset(self, index: int) -> None:
         async with self._lock:

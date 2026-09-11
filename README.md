@@ -140,6 +140,32 @@ their own machine off).
 Already running on AWS? See "EC2 setup" and "Lambda (wake/sleep) setup"
 below instead — that path still works unchanged.
 
+## Cockpit UI (web control panel)
+
+Instead of running `bot/main.py` directly and driving everything through
+Discord slash commands, `supervisor/main.py` gives you a browser-based
+control panel: first-run setup (paste your Discord bot token, set an admin
+password — no manual `.env` editing), a slot manager (link/select/delete
+accounts, replacing `/link`/`/link-finish`/`/delete-slot`), a per-slot
+now-playing/queue view (via the Spotify Web API), and **Jam mode** — a
+no-login, shareable link to one slot's queue for anyone to add songs.
+
+The supervisor is a separate process that starts/stops/restarts the bot
+for you (needed because Discord tokens can't be swapped without a restart).
+`/connect`/`/reconnect` (actually joining a voice channel) still only work
+from Discord — the cockpit doesn't replace that.
+
+1. Build the frontend once: `cd frontend && npm install && npm run build`.
+2. Run `python supervisor/main.py` (needs the same `requirements.txt`
+   dependencies as the bot — no new ones).
+3. Open `http://127.0.0.1:8080` and follow the setup wizard.
+
+Jam mode links (`/jam/<token>` on the same origin) work without ever
+logging in — only knowing the link grants access to that one slot's queue.
+They're plain HTTP today (LAN/localhost); putting a tunnel (Cloudflare
+Tunnel, Tailscale Funnel) in front of the supervisor to share a Jam link
+outside your network is a natural next step, not built in yet.
+
 ## EC2 setup
 
 1. Launch `t3.micro` (free-tier eligible; use `t3.small` if 1 GiB RAM feels tight), Amazon Linux 2023 (x86_64), 8 GiB gp3 root volume, tag `Name=discord-music-bot`.

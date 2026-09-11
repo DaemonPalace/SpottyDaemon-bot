@@ -264,6 +264,19 @@ class LibrespotProcess:
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.returncode is None
 
+    def is_draining(self) -> bool:
+        return self._draining
+
+    def pipe_backlog_seconds(self) -> float | None:
+        """Same value _monitor_loop already logs at INFO, exposed for the
+        diagnostics API instead of only ending up in the log."""
+        if self._drain_fd is None:
+            return None
+        backlog = self._pipe_backlog_bytes(self._drain_fd)
+        if backlog is None:
+            return None
+        return backlog / _PCM_BYTES_PER_SECOND
+
 
 class LibrespotManager:
     def __init__(self, slots: list[SpotifySlot]):
@@ -314,6 +327,9 @@ class LibrespotManager:
 
     def get(self, slot_name: str) -> LibrespotProcess:
         return self.processes[slot_name]
+
+    def restart_count(self, slot_name: str) -> int:
+        return self._restart_counts.get(slot_name, 0)
 
     async def restart_if_dead(self) -> None:
         for proc in list(self.processes.values()):

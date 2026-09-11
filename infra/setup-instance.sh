@@ -3,6 +3,11 @@
 # bot needs (ffmpeg, Rust, librespot), deploys the app to /opt/discord-bot,
 # and walks you through entering your Discord app's credentials.
 #
+# Targets Amazon Linux/Fedora (uses `dnf`). On another distro, install the
+# equivalent packages by hand (see the `dnf install` line below for the
+# list) and skip straight to the librespot build / systemd steps -- nothing
+# else here is AWS- or distro-specific.
+#
 # Run this ON THE INSTANCE, after: launching it (see README's "EC2 setup"
 # section for the launch/IAM-role steps) and `git clone`-ing this repo to
 # ~/discord-bot. Safe to re-run -- it skips work already done and won't

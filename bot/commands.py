@@ -1,7 +1,7 @@
-"""Command logic shared between the gateway CommandTree (main.py, only fires
-when no Interactions Endpoint URL is configured -- useful for local testing)
-and the SQS-relayed path (interaction_relay.py, what actually runs in
-production once the Lambda endpoint is set)."""
+"""Command logic shared between the gateway CommandTree (main.py -- the
+default and only path for a self-hosted/standalone install) and the
+SQS-relayed path (interaction_relay.py, used only by the legacy AWS
+deployment when a Discord Interactions Endpoint URL is configured)."""
 
 import asyncio
 import itertools
@@ -14,8 +14,9 @@ import discord
 
 from config import SpotifySlot
 from librespot_manager import LibrespotManager
-from slot_store import SlotStore
+from slot_store import STATE_CLAIMED, SlotStore
 from spotify_link import LinkManager
+from spotify_web_api import WebApiLinkManager
 
 log = logging.getLogger("commands")
 
@@ -333,6 +334,20 @@ def forget_session(guild_id: int) -> None:
     _active_sessions.pop(guild_id, None)
 
 
+def active_sessions_snapshot() -> list[dict]:
+    """JSON-safe view of _active_sessions for the diagnostics API -- omits
+    the generation counter (internal race-guard, not diagnostic info)."""
+    return [
+        {
+            "guild_id": guild_id,
+            "slot_name": session.slot_name,
+            "notify_channel_id": session.notify_channel_id,
+            "reattach_failures": session.reattach_failures,
+        }
+        for guild_id, session in _active_sessions.items()
+    ]
+
+
 async def do_link(
     user_id: str, slot_name: str, password: str, link_manager: LinkManager
 ) -> tuple[str, bool]:
@@ -343,9 +358,10 @@ async def do_link(
 
 
 async def do_link_finish(
-    user_id: str, pasted_url: str, link_manager: LinkManager
+    user_id: str, pasted_url: str | None, link_manager: LinkManager
 ) -> tuple[str, bool]:
-    """Returns (content, ephemeral)."""
+    """Returns (content, ephemeral). pasted_url is None/blank when the bot
+    and the logging-in browser share a machine -- see LinkManager.finish_link."""
     content, _success = await link_manager.finish_link(user_id, pasted_url)
     return content, True
 
@@ -372,3 +388,25 @@ async def do_delete_slot(
 
     await store.reset(slot_meta.index)
     return f"Slot '{slot_name}' deleted and freed up for /link.", False
+
+
+async def do_link_web_api(
+    user_id: str, slot_name: str, store: SlotStore, web_api_link_manager: WebApiLinkManager
+) -> tuple[str, bool]:
+    """Returns (content, ephemeral). Requires the slot to already be claimed
+    via /link -- Web API scopes are meaningless without a linked account."""
+    slot_meta = store.get_by_name(slot_name)
+    if slot_meta is None:
+        return f"No slot named '{slot_name}'.", True
+    if slot_meta.state != STATE_CLAIMED:
+        return f"Slot '{slot_name}' isn't claimed yet -- run /link first.", True
+    content, _success = web_api_link_manager.start_link(user_id, slot_meta.index)
+    return content, True
+
+
+async def do_link_web_api_finish(
+    user_id: str, pasted_url: str, web_api_link_manager: WebApiLinkManager
+) -> tuple[str, bool]:
+    """Returns (content, ephemeral)."""
+    content, _success = await web_api_link_manager.finish_link(user_id, pasted_url)
+    return content, True

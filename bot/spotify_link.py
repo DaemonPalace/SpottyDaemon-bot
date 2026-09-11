@@ -125,6 +125,16 @@ class LinkManager:
         spotify_slot = self.librespot.slot_by_index(index)
         assert spotify_slot is not None
         os.makedirs(spotify_slot.cache_dir, exist_ok=True)
+        # A free slot shouldn't have leftover credentials, but can if a
+        # previous link attempt crashed/errored after librespot wrote
+        # credentials.json but before this flow finished (or completed) --
+        # librespot silently reuses valid cached credentials instead of
+        # doing the OAuth browser flow, which would authenticate the new
+        # /link as the STALE account with no login prompt at all.
+        credentials_path = os.path.join(spotify_slot.cache_dir, "credentials.json")
+        if os.path.exists(credentials_path):
+            log.warning("slot %s had leftover credentials.json, removing before fresh link", spotify_slot.name)
+            os.remove(credentials_path)
 
         env = {**os.environ, "RUST_LOG": "info"}
         try:
@@ -162,11 +172,13 @@ class LinkManager:
         return (
             f"**Step 1:** open this link and log in with the Spotify account for **{slot_name}**:\n"
             f"{url}\n\n"
-            "**Step 2:** after logging in, your browser will fail to load the page it redirects "
-            "to next -- that's expected. Copy the FULL url from your browser's address bar at "
-            "that point (it starts with `http://127.0.0.1`).\n\n"
-            f"**Step 3:** run `/link-finish` and paste that url in, within "
-            f"{config.LINK_TIMEOUT_SECONDS // 60} minutes.",
+            "**Step 2:** after logging in, your browser will most likely fail to load the page "
+            "it redirects to next (expected, unless the bot happens to be running on this same "
+            "machine, in which case it may just work). If it fails, copy the FULL url from your "
+            "browser's address bar at that point (it starts with `http://127.0.0.1`).\n\n"
+            f"**Step 3:** run `/link-finish` within {config.LINK_TIMEOUT_SECONDS // 60} minutes -- "
+            "paste that url in if you had to copy one, or leave it blank if the page loaded fine "
+            "(same machine as the bot).",
             True,
         )
 
@@ -184,7 +196,15 @@ class LinkManager:
         except TimeoutError:
             return None
 
-    async def finish_link(self, user_id: str, pasted_url: str) -> tuple[str, bool]:
+    async def finish_link(self, user_id: str, pasted_url: str | None = None) -> tuple[str, bool]:
+        """pasted_url is only needed when the bot and the browser doing the
+        Spotify login are on different machines (the normal remote/friend
+        case) -- the redirect to 127.0.0.1:<port> fails to load there, so the
+        bot has to replay it itself from the copied url. When the bot and
+        browser share a machine (e.g. testing locally), that redirect
+        actually reaches librespot's own server on its own; credentials.json
+        just appears with no failed page and nothing to copy, so pasted_url
+        can be omitted and this only needs to wait for that to happen."""
         pending = self._pending.get(user_id)
         if pending is None:
             return "No link in progress. Run /link first.", False
@@ -195,25 +215,26 @@ class LinkManager:
             await self.store.reset(pending.slot_index)
             return "That login session expired -- run /link again.", False
 
-        query = urllib.parse.urlparse(pasted_url.strip()).query
-        if not query:
-            return (
-                "That doesn't look like the right url -- make sure you copied the FULL address "
-                "from your browser's address bar, including the `?code=...` part.",
-                False,
-            )
+        if pasted_url:
+            query = urllib.parse.urlparse(pasted_url.strip()).query
+            if not query:
+                return (
+                    "That doesn't look like the right url -- make sure you copied the FULL address "
+                    "from your browser's address bar, including the `?code=...` part.",
+                    False,
+                )
 
-        callback_url = f"http://127.0.0.1:{config.LINK_OAUTH_PORT}/login?{query}"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(callback_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    await resp.read()
-        except Exception:
-            log.exception("failed to replay oauth callback to librespot")
-            self._pending.pop(user_id, None)
-            await self._kill(process)
-            await self.store.reset(pending.slot_index)
-            return "Something went wrong finishing the login -- run /link again.", False
+            callback_url = f"http://127.0.0.1:{config.LINK_OAUTH_PORT}/login?{query}"
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(callback_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        await resp.read()
+            except Exception:
+                log.exception("failed to replay oauth callback to librespot")
+                self._pending.pop(user_id, None)
+                await self._kill(process)
+                await self.store.reset(pending.slot_index)
+                return "Something went wrong finishing the login -- run /link again.", False
 
         spotify_slot = self.librespot.slot_by_index(pending.slot_index)
         assert spotify_slot is not None
@@ -225,9 +246,17 @@ class LinkManager:
 
         if not success:
             await self.store.reset(pending.slot_index)
+            if pasted_url:
+                return (
+                    "Login didn't complete -- the pasted url may have been wrong, expired, or "
+                    "already used. Run /link again to retry.",
+                    False,
+                )
             return (
-                "Login didn't complete -- the pasted url may have been wrong, expired, or "
-                "already used. Run /link again to retry.",
+                "Login hasn't completed yet -- finish logging in in your browser, then run "
+                "/link-finish again (no url needed if the bot and your browser are on the same "
+                "machine). If your browser showed a failed-to-load page instead, paste that url "
+                "into /link-finish.",
                 False,
             )
 

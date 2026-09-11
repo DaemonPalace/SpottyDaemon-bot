@@ -33,11 +33,45 @@ def _get(key: str) -> str:
 
 DISCORD_TOKEN = _get("DISCORD_TOKEN")
 # SQS queue lambda/wake_sleep.py relays interactions to (see interaction_relay.py).
-INTERACTIONS_QUEUE_URL = os.environ["INTERACTIONS_QUEUE_URL"]
+# Optional: unset means "no Lambda/SQS relay -- run the gateway CommandTree
+# directly," the default and only path for a self-hosted/standalone install.
+INTERACTIONS_QUEUE_URL = os.environ.get("INTERACTIONS_QUEUE_URL")
 IDLE_SHUTDOWN_MINUTES = int(os.environ.get("IDLE_SHUTDOWN_MINUTES", "20"))
 IDLE_CHECK_INTERVAL_SECONDS = int(os.environ.get("IDLE_CHECK_INTERVAL_SECONDS", "30"))
-# Set to "false" to disable self-stopping the EC2 instance (e.g. local testing).
+# Set to "false" to disable self-stopping the host on idle (e.g. local testing).
 ENABLE_AUTO_SHUTDOWN = os.environ.get("ENABLE_AUTO_SHUTDOWN", "true").lower() == "true"
+# Which HostController implements "stop the host" (idle shutdown, /sleep):
+# "noop" (default, self-host/standalone -- the user turns the app off
+# themselves) or "ec2" (legacy AWS deployment, see bot/host_control.py).
+HOST_CONTROLLER = os.environ.get("HOST_CONTROLLER", "noop")
+
+# Read-only diagnostics REST API (bot/api.py). Loopback-only by default --
+# not exposed off-box unless deliberately rebound. If API_TOKEN is unset the
+# API is unauthenticated; fine for local diagnostics/UI use, not for
+# exposing beyond localhost.
+API_HOST = os.environ.get("API_HOST", "127.0.0.1")
+API_PORT = int(os.environ.get("API_PORT", "8787"))
+API_TOKEN = os.environ.get("API_TOKEN")
+
+# Optional: a test server's guild ID. When set, slash commands sync to just
+# that guild instead of globally -- guild-scoped commands update instantly,
+# global ones can take up to an hour to propagate (plus Discord client-side
+# caching on top of that). Handy for local dev iteration; leave unset for a
+# normal deployment.
+DEV_GUILD_ID = os.environ.get("DEV_GUILD_ID")
+
+# Spotify Web API OAuth (bot/spotify_web_api.py) -- a separate Authorization
+# Code + PKCE flow against the bot's OWN registered Spotify app, independent
+# of librespot's own OAuth client (which only yields a Connect-session
+# credentials.json, not a Web-API-usable token). Register an app at
+# developer.spotify.com and add SPOTIFY_WEB_API_REDIRECT_URI there.
+SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
+# Optional -- only needed if the app is registered as a confidential client;
+# a PKCE public client doesn't require one.
+SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
+SPOTIFY_WEB_API_REDIRECT_URI = os.environ.get(
+    "SPOTIFY_WEB_API_REDIRECT_URI", "http://127.0.0.1:5589/callback"
+)
 
 LIBRESPOT_BIN = os.environ.get("LIBRESPOT_BIN", "librespot")
 PIPE_DIR = os.environ.get("PIPE_DIR", "/tmp/librespot")

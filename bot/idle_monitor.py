@@ -4,21 +4,24 @@ import time
 
 import discord
 
-import ec2_control
 from config import ENABLE_AUTO_SHUTDOWN, IDLE_CHECK_INTERVAL_SECONDS, IDLE_SHUTDOWN_MINUTES
+from host_control import HostController
 from slot_store import STATE_LINKING, SlotStore
 
 log = logging.getLogger("idle_monitor")
 
 
 class IdleMonitor:
-    """Stops the EC2 instance after IDLE_SHUTDOWN_MINUTES with zero active
-    voice connections and no /link in progress (a link involves no voice
-    connection at all, but shouldn't get killed mid-flow)."""
+    """Stops the host after IDLE_SHUTDOWN_MINUTES with zero active voice
+    connections and no /link in progress (a link involves no voice connection
+    at all, but shouldn't get killed mid-flow). "Stop" is whatever
+    host_controller implements -- a no-op on self-hosted/standalone installs,
+    an EC2 instance stop on the legacy AWS deployment."""
 
-    def __init__(self, bot: discord.Client, store: SlotStore):
+    def __init__(self, bot: discord.Client, store: SlotStore, host_controller: HostController):
         self.bot = bot
         self.store = store
+        self.host_controller = host_controller
         self._last_active = time.monotonic()
         self._task: asyncio.Task | None = None
 
@@ -52,7 +55,7 @@ class IdleMonitor:
             log.warning("no active voice connections for %s minutes", IDLE_SHUTDOWN_MINUTES)
             if ENABLE_AUTO_SHUTDOWN:
                 try:
-                    ec2_control.stop_this_instance()
+                    await self.host_controller.stop_host()
                 except Exception:
                     log.exception("failed to stop instance; will retry next check")
                     continue

@@ -3,22 +3,26 @@ import logging
 import discord
 from discord import app_commands
 
-import ec2_control
+from api import DiagnosticsApi
 from commands import (
     do_connect,
     do_delete_slot,
     do_disconnect,
     do_link,
     do_link_finish,
+    do_link_web_api,
+    do_link_web_api_finish,
     do_reconnect,
     forget_session,
 )
-from config import DISCORD_TOKEN, SLOTS
+from config import DEV_GUILD_ID, DISCORD_TOKEN, HOST_CONTROLLER, INTERACTIONS_QUEUE_URL, SLOTS
+from host_control import build_host_controller
 from idle_monitor import IdleMonitor
 from interaction_relay import InteractionRelay
 from librespot_manager import LibrespotManager
 from slot_store import SlotStore
 from spotify_link import LinkManager
+from spotify_web_api import WebApiLinkManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("bot")
@@ -32,8 +36,15 @@ tree = app_commands.CommandTree(client)
 slot_store = SlotStore()
 librespot = LibrespotManager(SLOTS)
 link_manager = LinkManager(slot_store, librespot)
-idle_monitor = IdleMonitor(client, slot_store)
-interaction_relay = InteractionRelay(client, librespot, slot_store, link_manager)
+web_api_link_manager = WebApiLinkManager(slot_store)
+host_controller = build_host_controller(HOST_CONTROLLER)
+idle_monitor = IdleMonitor(client, slot_store, host_controller)
+# None when no Lambda/SQS relay is configured -- the gateway CommandTree
+# below is then the one and only command path (self-host/standalone default).
+interaction_relay = (
+    InteractionRelay(client, librespot, slot_store, link_manager) if INTERACTIONS_QUEUE_URL else None
+)
+diagnostics_api = DiagnosticsApi(client, librespot, slot_store)
 
 
 class PasswordModal(discord.ui.Modal):
@@ -52,11 +63,11 @@ class PasswordModal(discord.ui.Modal):
         await self._on_submit_callback(interaction, str(self.password.value))
 
 
-# These only fire over the gateway, which only happens when the Discord app
-# has no Interactions Endpoint URL configured (i.e. local testing without
-# the Lambda wired up). In production, Discord routes everything except
-# /wake and /sleep to interaction_relay.py instead -- see its module
-# docstring.
+# These fire over the gateway, the default and only command path for a
+# self-hosted/standalone install (no Lambda/SQS relay configured). The
+# legacy AWS deployment instead sets a Discord Interactions Endpoint URL,
+# which routes everything except /wake and /sleep to interaction_relay.py
+# instead -- see its module docstring.
 @tree.command(name="connect", description="Join your voice channel and stream a Spotify Connect slot")
 @app_commands.describe(slot="Which slot to stream (see whoever set it up with /link)")
 async def connect(interaction: discord.Interaction, slot: str):
@@ -111,9 +122,9 @@ async def link(interaction: discord.Interaction, slotname: str):
     await interaction.response.send_modal(PasswordModal(f"Set a password for '{slotname}'", handle_submit))
 
 
-@tree.command(name="link-finish", description="Finish /link by pasting the url your browser failed to load")
-@app_commands.describe(url="The http://127.0.0.1:.../login?code=... url from your browser's address bar")
-async def link_finish(interaction: discord.Interaction, url: str):
+@tree.command(name="link-finish", description="Finish /link (paste the url your browser failed to load, or leave blank if it loaded fine)")
+@app_commands.describe(url="The http://127.0.0.1:.../login?code=... url, only if your browser failed to load it")
+async def link_finish(interaction: discord.Interaction, url: str | None = None):
     await interaction.response.defer(ephemeral=True)
     content, ephemeral = await do_link_finish(str(interaction.user.id), url, link_manager)
     await interaction.followup.send(content, ephemeral=ephemeral)
@@ -125,6 +136,23 @@ async def link_finish(interaction: discord.Interaction, url: str):
 async def delete_slot(interaction: discord.Interaction, name: str):
     content, ephemeral = await do_delete_slot(name, slot_store, librespot)
     await interaction.response.send_message(content, ephemeral=ephemeral)
+
+
+@tree.command(name="link-web-api", description="Grant this bot Spotify Web API access for an already-linked slot")
+@app_commands.describe(slotname="Slot name (must already be linked via /link)")
+async def link_web_api(interaction: discord.Interaction, slotname: str):
+    content, ephemeral = await do_link_web_api(
+        str(interaction.user.id), slotname, slot_store, web_api_link_manager
+    )
+    await interaction.response.send_message(content, ephemeral=ephemeral)
+
+
+@tree.command(name="link-web-api-finish", description="Finish /link-web-api by pasting the url your browser failed to load")
+@app_commands.describe(url="The http://127.0.0.1:.../callback?code=... url from your browser's address bar")
+async def link_web_api_finish(interaction: discord.Interaction, url: str):
+    await interaction.response.defer(ephemeral=True)
+    content, ephemeral = await do_link_web_api_finish(str(interaction.user.id), url, web_api_link_manager)
+    await interaction.followup.send(content, ephemeral=ephemeral)
 
 
 # Registered here too (not just via infra/register-discord-commands.sh) so a
@@ -143,17 +171,25 @@ async def wake(interaction: discord.Interaction):
 @tree.command(name="sleep", description="Stop the music bot instance")
 async def sleep(interaction: discord.Interaction):
     await interaction.response.send_message("Stopping the music bot instance.")
-    ec2_control.stop_this_instance()
+    await host_controller.stop_host()
 
 
 @client.event
 async def on_ready():
     log.info("logged in as %s", client.user)
     await librespot.start_claimed(slot_store.claimed_indexes())
-    await tree.sync()
+    if DEV_GUILD_ID:
+        guild = discord.Object(id=int(DEV_GUILD_ID))
+        tree.copy_global_to(guild=guild)
+        await tree.sync(guild=guild)
+        log.info("synced commands to dev guild %s (instant, not global)", DEV_GUILD_ID)
+    else:
+        await tree.sync()
     idle_monitor.start()
-    interaction_relay.start()
+    if interaction_relay is not None:
+        interaction_relay.start()
     link_manager.start()
+    diagnostics_api.start()
 
 
 @client.event

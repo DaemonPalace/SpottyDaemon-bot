@@ -62,6 +62,11 @@ class SlotMetadata:
     password_hash: str | None = None
     claimed_by_user_id: str | None = None
     claimed_at: float | None = None
+    # Spotify Web API OAuth (bot/spotify_web_api.py) -- independent of the
+    # librespot Connect-session credentials.json for this slot. None until
+    # /link-web-api completes; wiped by reset() same as everything else.
+    web_api_refresh_token: str | None = None
+    web_api_linked_at: float | None = None
 
 
 class SlotStore:
@@ -87,6 +92,8 @@ class SlotStore:
                     password_hash=entry.get("password_hash"),
                     claimed_by_user_id=entry.get("claimed_by_user_id"),
                     claimed_at=entry.get("claimed_at"),
+                    web_api_refresh_token=entry.get("web_api_refresh_token"),
+                    web_api_linked_at=entry.get("web_api_linked_at"),
                 )
         # A slot stuck "linking" from a previous process is stale -- the
         # transient OAuth subprocess that would have finished it is gone
@@ -106,6 +113,8 @@ class SlotStore:
                     "password_hash": slot.password_hash,
                     "claimed_by_user_id": slot.claimed_by_user_id,
                     "claimed_at": slot.claimed_at,
+                    "web_api_refresh_token": slot.web_api_refresh_token,
+                    "web_api_linked_at": slot.web_api_linked_at,
                 }
                 for slot in self._slots.values()
             }
@@ -153,6 +162,13 @@ class SlotStore:
             slot.password_hash = hash_password(password)
             slot.claimed_by_user_id = user_id
             slot.claimed_at = time.time()
+            self._save_locked()
+
+    async def set_web_api_token(self, index: int, refresh_token: str) -> None:
+        async with self._lock:
+            slot = self._slots[index]
+            slot.web_api_refresh_token = refresh_token
+            slot.web_api_linked_at = time.time()
             self._save_locked()
 
     async def reset(self, index: int) -> None:

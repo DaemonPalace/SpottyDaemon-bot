@@ -59,11 +59,15 @@ class InteractionRelay:
         self.librespot = librespot
         self.store = store
         self.link_manager = link_manager
-        self._sqs = boto3.client("sqs")
+        self._sqs = None
         self._task: asyncio.Task | None = None
         self._http: aiohttp.ClientSession | None = None
 
     def start(self) -> None:
+        # Built here, not __init__, so importing/constructing this class
+        # never requires boto3/AWS credentials -- only actually starting the
+        # relay (main.py only does so when INTERACTIONS_QUEUE_URL is set).
+        self._sqs = boto3.client("sqs")
         self._task = asyncio.create_task(self._loop())
 
     def stop(self) -> None:
@@ -120,7 +124,7 @@ class InteractionRelay:
         if command_name == "disconnect":
             return await do_disconnect(guild)
         if command_name == "link-finish":
-            return await do_link_finish(str(member_id), options["url"], self.link_manager)
+            return await do_link_finish(str(member_id), options.get("url"), self.link_manager)
         if command_name == "delete-slot":
             permissions = int(interaction["member"].get("permissions", "0"))
             if not permissions & MANAGE_GUILD_PERMISSION:

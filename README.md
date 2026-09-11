@@ -118,6 +118,28 @@ Function URLs, SQS, Secrets Manager) along the way.
 - `lambda/wake_sleep.py` — Discord Interactions Endpoint handler (`/wake`, `/sleep`, password modals, SQS relay)
 - `infra/` — setup scripts + IAM policy JSON for the Lambda role and the EC2 instance role
 
+## Self-hosting (no AWS)
+
+Just want to run this on your own Linux box, no EC2/Lambda/SQS? This is the
+default: `INTERACTIONS_QUEUE_URL` and `HOST_CONTROLLER` are both optional,
+defaulting to running the gateway `CommandTree` directly (all slash commands
+work with no Interactions Endpoint URL configured) and to a no-op
+"stop the host" action (`HOST_CONTROLLER=noop`, since a self-hoster turns
+their own machine off).
+
+1. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` (and, if you
+   want, `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET` for Web API queue/
+   now-playing features later — see "Spotify Web API access" below).
+2. Install librespot + ffmpeg, then `pip install -r requirements.txt`.
+3. Run `bot/main.py` directly, or install `systemd/discord-music-bot.service`
+   for it to run on boot (adjust the hardcoded `/opt/discord-bot` paths/user
+   if you're not using that convention).
+4. Check `curl http://127.0.0.1:8787/healthz` once it's running — that's the
+   diagnostics API (see `bot/api.py`), on by default, loopback-only.
+
+Already running on AWS? See "EC2 setup" and "Lambda (wake/sleep) setup"
+below instead — that path still works unchanged.
+
 ## EC2 setup
 
 1. Launch `t3.micro` (free-tier eligible; use `t3.small` if 1 GiB RAM feels tight), Amazon Linux 2023 (x86_64), 8 GiB gp3 root volume, tag `Name=discord-music-bot`.
@@ -151,8 +173,8 @@ for any of this.
 
 1. A friend runs `/link <slotname>` (lowercase letters/numbers/hyphens, e.g. `alices-jams`) and sets a password in the popup that appears.
 2. The bot replies (ephemerally) with a Spotify login link and instructions. They log in with the Spotify account they want to use.
-3. After logging in, Spotify redirects their browser to `http://127.0.0.1:<port>/...` — this fails to load (expected, since `127.0.0.1` means *their* machine, not the bot's), but the failed url in the address bar is what librespot needs.
-4. They copy that url and run `/link-finish <url>` within `LINK_TIMEOUT_SECONDS` (default 15 min) to complete linking.
+3. After logging in, Spotify redirects their browser to `http://127.0.0.1:<port>/...`. If the bot is running on a different machine than their browser (the normal case for a friend linking their own account), this fails to load — that's expected, `127.0.0.1` means *their* machine, not the bot's — and the failed url in the address bar is what librespot needs. If the bot happens to be running on the *same* machine as the browser (e.g. testing locally on your own box), the page loads and completes on its own, no url to copy.
+4. Run `/link-finish` within `LINK_TIMEOUT_SECONDS` (default 15 min) to complete linking — paste the failed url in if you had to copy one, or leave it blank if the page loaded fine.
 5. Once linked, anyone can `/connect <slotname>` and enter the slot's password in the popup to start streaming it.
 
 This works without exposing any port on the EC2 instance: librespot's own
@@ -185,12 +207,34 @@ Spotify-side pause), so a pause doesn't require running `/connect` again.
 
 `bot/idle_monitor.py` tracks how long `voice_clients` has been empty (and
 whether a `/link` is currently in progress, which should also block
-shutdown); after `IDLE_SHUTDOWN_MINUTES` (default 20, set in `.env`) it
-calls `ec2_control.stop_this_instance()`, which reads the instance's own ID
-via IMDSv2 and calls `ec2:StopInstances` on itself. The bot also
-proactively disconnects from a voice channel once it's the last non-bot
-member left, so the idle clock starts as soon as everyone leaves rather
-than waiting for a stale connection to time out on its own.
+shutdown); after `IDLE_SHUTDOWN_MINUTES` (default 20, set in `.env`) it calls
+`HostController.stop_host()` (`bot/host_control.py`) — a no-op by default
+(`HOST_CONTROLLER=noop`), or `ec2_control.stop_this_instance()` (reads the
+instance's own ID via IMDSv2, calls `ec2:StopInstances` on itself) when
+`HOST_CONTROLLER=ec2`. The bot also proactively disconnects from a voice
+channel once it's the last non-bot member left, so the idle clock starts as
+soon as everyone leaves rather than waiting for a stale connection to time
+out on its own.
+
+## Spotify Web API access
+
+`/link`/`/link-finish` only get librespot a Spotify Connect session — no
+Web API scopes. `/link-web-api <slotname>` (requires the slot already be
+linked) runs a separate Authorization Code + PKCE flow against the bot's own
+Spotify app, same paste-the-failed-redirect UX as `/link-finish`. Requires
+`SPOTIFY_CLIENT_ID` (and, if your app is a confidential client,
+`SPOTIFY_CLIENT_SECRET`) set in `.env` — register an app at
+developer.spotify.com and add `SPOTIFY_WEB_API_REDIRECT_URI` (default
+`http://127.0.0.1:5589/callback`) as a redirect URI there. See
+`bot/spotify_web_api.py`.
+
+## Diagnostics API
+
+`bot/api.py` serves a small read-only REST API, on by default at
+`127.0.0.1:8787` (`API_HOST`/`API_PORT` in `.env`): `/healthz`,
+`/api/latency`, `/api/slots`, `/api/slots/<name>/audio`, `/api/sessions`.
+Set `API_TOKEN` to require `Authorization: Bearer <token>` on everything
+except `/healthz` — recommended before exposing this beyond localhost.
 
 ## Known gaps / next steps
 

@@ -57,6 +57,14 @@ _PCM_BYTES_PER_SECOND = 44100 * 2 * 2
 _DRAIN_TICK_SECONDS = 0.1
 _DRAIN_CHUNK_SIZE = int(_PCM_BYTES_PER_SECOND * _DRAIN_TICK_SECONDS)
 
+# Linux's default pipe buffer (65536 bytes, ~371ms of this audio format) is
+# what Stage A2's diagnostics found sitting as a constant steady-state
+# backlog during normal playback -- not a bug, just the pipe staying full at
+# capacity. Rounded up to a page multiple by the kernel regardless; 4 pages
+# leaves some slack for read-side jitter while cutting worst-case latency
+# roughly 4x.
+_PIPE_BUFFER_SIZE_BYTES = 4096 * 4
+
 # How often to sample the pipe's kernel buffer for diagnosing sync drift
 # (bot/commands.py issue: audio lagging/speeding up). FIONREAD works on
 # either end of a FIFO and doesn't consume data, so sampling our own
@@ -133,6 +141,21 @@ class LibrespotProcess:
         if self._drain_fd is not None:
             return
         self._drain_fd = os.open(self.slot.pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+        # Pipe buffer size is a property of the pipe itself, not just this
+        # fd -- shrinking it here (before librespot's writer ever opens the
+        # other end, so it's guaranteed empty) caps how much undelivered
+        # audio can ever sit queued, which is exactly the steady-state
+        # backlog Stage A2's diagnostics measured: it tracked the kernel's
+        # default 65536-byte pipe size (~371ms of s16le stereo 44.1kHz
+        # audio) almost exactly. Smaller still leaves slack for read-side
+        # jitter (ffmpeg/our drain loop being a tick late) without
+        # reintroducing the writer-blocks-forever hang this file's module
+        # docstring describes -- both readers still drain in step with
+        # production rate, just with less cushion.
+        try:
+            fcntl.fcntl(self._drain_fd, fcntl.F_SETPIPE_SZ, _PIPE_BUFFER_SIZE_BYTES)
+        except OSError:
+            log.warning("could not shrink pipe buffer for slot %s, using kernel default", self.slot.name)
         self._drain_task = asyncio.create_task(self._drain_loop())
         self._monitor_task = asyncio.create_task(self._monitor_loop())
 

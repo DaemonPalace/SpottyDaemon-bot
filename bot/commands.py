@@ -4,8 +4,11 @@ and the SQS-relayed path (interaction_relay.py, what actually runs in
 production once the Lambda endpoint is set)."""
 
 import asyncio
+import itertools
 import logging
 import os
+import time
+from dataclasses import dataclass, field
 
 import discord
 
@@ -16,16 +19,43 @@ from spotify_link import LinkManager
 
 log = logging.getLogger("commands")
 
-# Which slot each guild is *supposed* to be connected to right now, keyed by
-# guild id. Used to tell "ffmpeg exited because the user /disconnect'd" apart
-# from "ffmpeg exited on its own" (e.g. librespot appears to close its pipe
-# write-end while Spotify is paused, which looks like a clean EOF to ffmpeg)
-# -- only the latter should trigger an automatic reattach. Cleared by
-# do_disconnect and overwritten by a fresh do_connect, both of which make any
-# in-flight reattach for the old session a no-op once it checks this map.
-_active_sessions: dict[int, str] = {}
+
+@dataclass
+class _Session:
+    """What slot each guild is *supposed* to be connected to right now, plus
+    enough state to make self-heal reattaches safe and boundable.
+
+    generation distinguishes this connect/reconnect from any earlier one to
+    the *same* slot_name -- without it, an in-flight _reattach timer from a
+    session that was superseded by /reconnect (same slot name, fresh
+    process) could still match on slot_name alone and race the new attach,
+    both calling voice_client.play() around the same time. Every do_connect
+    and do_reconnect mints a new generation, so any stale timer's check
+    fails immediately regardless of slot name.
+
+    reattach_failures / last_attach_started bound the self-heal loop: if
+    ffmpeg keeps dying within _FLAP_WINDOW_SECONDS of each reattach (e.g.
+    librespot has no valid Spotify Connect context to actually stream --
+    restarting librespot doesn't fix that), we stop retrying after
+    _MAX_REATTACH_ATTEMPTS and post one notice instead of hammering
+    librespot/Discord forever."""
+
+    slot_name: str
+    generation: int
+    notify_channel_id: int | None
+    reattach_failures: int = 0
+    last_attach_started: float = field(default_factory=time.monotonic)
+
+
+_active_sessions: dict[int, _Session] = {}
+_session_counter = itertools.count(1)
 
 _REATTACH_DELAY_SECONDS = 2
+# A reattach that dies again within this long of starting counts as part of
+# the same flap storm; longer than that (e.g. a normal Spotify pause) resets
+# the counter instead of counting against the cap.
+_FLAP_WINDOW_SECONDS = 10
+_MAX_REATTACH_ATTEMPTS = 3
 
 
 def _lookup_verified_slot(
@@ -51,8 +81,11 @@ async def do_connect(
     password: str,
     librespot: LibrespotManager,
     store: SlotStore,
+    channel_id: int | None = None,
 ) -> tuple[str, bool]:
-    """Returns (content, ephemeral)."""
+    """Returns (content, ephemeral). channel_id is the text channel the
+    command was run from, if any -- kept around so a bounded-out self-heal
+    loop (see _reattach) has somewhere to post a "still broken" notice."""
     if member.voice is None or member.voice.channel is None:
         return "Join a voice channel first.", True
 
@@ -79,8 +112,9 @@ async def do_connect(
             # reattach check will see it's no longer the active session.
             voice_client.stop()
 
-        _active_sessions[guild.id] = slot_name
-        _attach_source(guild, voice_client, slot_name, spotify_slot, librespot)
+        generation = next(_session_counter)
+        _active_sessions[guild.id] = _Session(slot_name, generation, channel_id)
+        _attach_source(guild, voice_client, slot_name, generation, spotify_slot, librespot)
     except Exception:
         stale_proc = librespot.processes.get(spotify_slot.name)
         if stale_proc is not None:
@@ -98,6 +132,7 @@ async def do_reconnect(
     password: str,
     librespot: LibrespotManager,
     store: SlotStore,
+    channel_id: int | None = None,
 ) -> tuple[str, bool]:
     """Forces a full disconnect+reconnect for one command: restarts the
     slot's librespot process from scratch and rejoins voice. No Spotify
@@ -123,8 +158,9 @@ async def do_reconnect(
         await librespot.start_one(spotify_slot)
 
         voice_client = await channel.connect()
-        _active_sessions[guild.id] = slot_name
-        _attach_source(guild, voice_client, slot_name, spotify_slot, librespot)
+        generation = next(_session_counter)
+        _active_sessions[guild.id] = _Session(slot_name, generation, channel_id)
+        _attach_source(guild, voice_client, slot_name, generation, spotify_slot, librespot)
     except Exception:
         stale_proc = librespot.processes.get(spotify_slot.name)
         if stale_proc is not None:
@@ -139,6 +175,7 @@ def _attach_source(
     guild: discord.Guild,
     voice_client: discord.VoiceClient,
     slot_name: str,
+    generation: int,
     spotify_slot: SpotifySlot,
     librespot: LibrespotManager,
 ) -> None:
@@ -150,9 +187,21 @@ def _attach_source(
     connect. Fetches the current LibrespotProcess by name (rather than
     taking one as an argument) so this stays correct even if the process
     behind spotify_slot.name got restarted (e.g. by /reconnect or a
-    self-heal watchdog) between calls."""
+    self-heal watchdog) between calls.
+
+    generation must match the caller's _Session.generation for the
+    after-callback to trigger a reattach -- see _Session's docstring for why
+    slot_name alone isn't enough to tell a live session from a superseded
+    one."""
     proc = librespot.get(spotify_slot.name)
     loop = asyncio.get_running_loop()
+
+    # Reset the flap-window clock on every (re)attach, not just the first --
+    # _reattach measures elapsed time since *this* attach to tell a flap
+    # apart from a stop after a long, healthy playback stretch.
+    session = _active_sessions.get(guild.id)
+    if session is not None and session.slot_name == slot_name and session.generation == generation:
+        session.last_attach_started = time.monotonic()
 
     # Stop competing with ffmpeg for bytes on this slot's pipe -- see
     # librespot_manager.py's module docstring for why this exists.
@@ -165,9 +214,10 @@ def _attach_source(
         current = librespot.processes.get(spotify_slot.name)
         if current is not None:
             loop.call_soon_threadsafe(current.resume_draining)
-        if _active_sessions.get(guild.id) == slot_name:
+        session = _active_sessions.get(guild.id)
+        if session is not None and session.slot_name == slot_name and session.generation == generation:
             asyncio.run_coroutine_threadsafe(
-                _reattach(guild, slot_name, spotify_slot, librespot), loop
+                _reattach(guild, slot_name, generation, spotify_slot, librespot), loop
             )
 
     source = discord.FFmpegPCMAudio(
@@ -179,17 +229,28 @@ def _attach_source(
 
 
 async def _reattach(
-    guild: discord.Guild, slot_name: str, spotify_slot: SpotifySlot, librespot: LibrespotManager
+    guild: discord.Guild,
+    slot_name: str,
+    generation: int,
+    spotify_slot: SpotifySlot,
+    librespot: LibrespotManager,
 ) -> None:
     """ffmpeg can exit on its own well before the user runs /disconnect --
     observed in production when Spotify is paused long enough that librespot
     appears to close its pipe write-end, which looks like a clean EOF to
     ffmpeg. There's no reason to make the user run /connect again just
     because Spotify was paused for a bit, so if this guild is still supposed
-    to be connected to this slot, transparently reattach a fresh source."""
+    to be connected to this slot, transparently reattach a fresh source.
+
+    Bounded: if reattaches keep dying within _FLAP_WINDOW_SECONDS of each
+    other (observed in production when librespot has no valid Spotify
+    Connect context to stream -- restarting librespot, e.g. via /reconnect,
+    doesn't fix that, so retrying forever just hammers librespot/Discord),
+    give up after _MAX_REATTACH_ATTEMPTS and post one notice instead."""
     await asyncio.sleep(_REATTACH_DELAY_SECONDS)
-    if _active_sessions.get(guild.id) != slot_name:
-        return  # someone /connect'd or /disconnect'd elsewhere meanwhile
+    session = _active_sessions.get(guild.id)
+    if session is None or session.slot_name != slot_name or session.generation != generation:
+        return  # superseded by a newer /connect, /reconnect, or /disconnect meanwhile
     voice_client = guild.voice_client
     if voice_client is None or not voice_client.is_connected() or voice_client.is_playing():
         return
@@ -200,12 +261,49 @@ async def _reattach(
             slot_name, guild.id,
         )
         return
-    log.info("reattaching to slot %s for guild %s after unexpected stop", slot_name, guild.id)
+
+    since_last_attach = time.monotonic() - session.last_attach_started
+    if since_last_attach >= _FLAP_WINDOW_SECONDS:
+        session.reattach_failures = 0  # that attach ran fine for a while -- not a flap
+    session.reattach_failures += 1
+
+    if session.reattach_failures > _MAX_REATTACH_ATTEMPTS:
+        log.warning(
+            "giving up auto-reattach for slot %s guild %s after %d attempts within %.0fs",
+            slot_name, guild.id, session.reattach_failures - 1, _FLAP_WINDOW_SECONDS,
+        )
+        await _notify_stuck(guild, session)
+        return  # stop retrying -- a fresh /connect or /reconnect starts a new session
+
+    log.info(
+        "reattaching to slot %s for guild %s after unexpected stop (attempt %d/%d)",
+        slot_name, guild.id, session.reattach_failures, _MAX_REATTACH_ATTEMPTS,
+    )
     try:
-        _attach_source(guild, voice_client, slot_name, spotify_slot, librespot)
+        _attach_source(guild, voice_client, slot_name, generation, spotify_slot, librespot)
     except Exception:
         proc.resume_draining()
         log.exception("failed to reattach slot %s for guild %s", slot_name, guild.id)
+
+
+async def _notify_stuck(guild: discord.Guild, session: _Session) -> None:
+    """Best-effort: tell whoever can see the channel that auto-recovery gave
+    up, since the alternative is silence that looks identical to "still
+    working on it"."""
+    channel = guild.get_channel(session.notify_channel_id) if session.notify_channel_id else None
+    if channel is None:
+        log.warning(
+            "no channel to notify for guild %s slot %s -- auto-reattach gave up silently",
+            guild.id, session.slot_name,
+        )
+        return
+    try:
+        await channel.send(
+            f"Lost audio on slot **{session.slot_name}** and couldn't recover automatically. "
+            "Make sure Spotify is actually playing something on this device, then run /reconnect."
+        )
+    except Exception:
+        log.exception("failed to post stuck-playback notice for guild %s", guild.id)
 
 
 async def do_disconnect(guild: discord.Guild) -> tuple[str, bool]:

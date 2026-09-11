@@ -139,11 +139,16 @@ class InteractionRelay:
             for component in row.get("components", []):
                 fields[component["custom_id"]] = component["value"]
         password = fields.get("password", "")
+        channel_id = int(interaction["channel_id"]) if interaction.get("channel_id") else None
 
         if command_name == "connect":
-            return await do_connect(guild, member, argument, password, self.librespot, self.store)
+            return await do_connect(
+                guild, member, argument, password, self.librespot, self.store, channel_id
+            )
         if command_name == "reconnect":
-            return await do_reconnect(guild, member, argument, password, self.librespot, self.store)
+            return await do_reconnect(
+                guild, member, argument, password, self.librespot, self.store, channel_id
+            )
         if command_name == "link":
             return await do_link(str(member.id), argument, password, self.link_manager)
         return f"Unknown modal submission: {custom_id}", True

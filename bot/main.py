@@ -66,7 +66,9 @@ async def connect(interaction: discord.Interaction, slot: str):
 
     async def handle_submit(modal_interaction: discord.Interaction, password: str):
         await modal_interaction.response.defer(ephemeral=True)
-        content, ephemeral = await do_connect(guild, member, slot, password, librespot, slot_store)
+        content, ephemeral = await do_connect(
+            guild, member, slot, password, librespot, slot_store, interaction.channel_id
+        )
         await modal_interaction.followup.send(content, ephemeral=ephemeral)
 
     await interaction.response.send_modal(PasswordModal(f"Password for '{slot}'", handle_submit))
@@ -81,7 +83,9 @@ async def reconnect(interaction: discord.Interaction, slot: str):
 
     async def handle_submit(modal_interaction: discord.Interaction, password: str):
         await modal_interaction.response.defer(ephemeral=True)
-        content, ephemeral = await do_reconnect(guild, member, slot, password, librespot, slot_store)
+        content, ephemeral = await do_reconnect(
+            guild, member, slot, password, librespot, slot_store, interaction.channel_id
+        )
         await modal_interaction.followup.send(content, ephemeral=ephemeral)
 
     await interaction.response.send_modal(PasswordModal(f"Password for '{slot}'", handle_submit))

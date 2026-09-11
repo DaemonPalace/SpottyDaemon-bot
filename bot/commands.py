@@ -56,6 +56,9 @@ _REATTACH_DELAY_SECONDS = 2
 # the counter instead of counting against the cap.
 _FLAP_WINDOW_SECONDS = 10
 _MAX_REATTACH_ATTEMPTS = 3
+# How long /reconnect waits after stopping the old librespot process before
+# starting a fresh one -- see do_reconnect for why.
+_RECONNECT_SETTLE_SECONDS = 3
 
 
 def _lookup_verified_slot(
@@ -155,6 +158,13 @@ async def do_reconnect(
             await guild.voice_client.disconnect(force=True)
 
         await librespot.stop_one(spotify_slot.name)
+        # Give Spotify's backend a moment to release the old Connect session
+        # for this device before a new one claims the same device identity.
+        # Observed in production: skipping this straight into start_one can
+        # leave the fresh session churning (device active/inactive, context
+        # lost, same track reloading on repeat) for a couple minutes before
+        # it settles on its own.
+        await asyncio.sleep(_RECONNECT_SETTLE_SECONDS)
         await librespot.start_one(spotify_slot)
 
         voice_client = await channel.connect()

@@ -64,10 +64,18 @@ _DRAIN_CHUNK_SIZE = int(_PCM_BYTES_PER_SECOND * _DRAIN_TICK_SECONDS)
 # the pipe regardless of whether ffmpeg or our drain loop is the one
 # actually reading it right now.
 _BACKLOG_LOG_INTERVAL_SECONDS = 3.0
-# Backlog at or above this is logged at WARNING instead of DEBUG -- it means
-# real audible lag is building up (more than a second of undelivered audio
-# queued), not just normal jitter.
-_BACKLOG_WARN_SECONDS = 1.0
+# Backlog at or above this is logged at WARNING -- a subtler amount of drift
+# than the original 1.0s cutoff (dropped to catch "a little bit out of
+# sync," not just severe buildups), since anything under this is audible
+# but wouldn't have crossed the old threshold at all.
+_BACKLOG_WARN_SECONDS = 0.3
+# Also log a routine sample at INFO this often even when nothing crosses
+# the warning threshold -- otherwise (root logger is INFO, see main.py) a
+# session with no spike leaves zero backlog data behind, which is exactly
+# what happened to the first attempt at this instrumentation: normal
+# samples were logged at DEBUG and got silently dropped, so a multi-hour
+# listening session produced no trend data at all.
+_ROUTINE_LOG_INTERVAL_SECONDS = 30.0
 
 
 class LibrespotProcess:
@@ -179,9 +187,13 @@ class LibrespotProcess:
         """Diagnostic-only: periodically logs pipe backlog (source of the
         "lags behind / speeds up" sync drift symptom -- see module
         docstring) and, once per attach, how long it took for librespot to
-        actually start producing audio after ffmpeg attached."""
+        actually start producing audio after ffmpeg attached. Always logs at
+        INFO or above -- DEBUG is silently dropped under this bot's default
+        logging config, so a DEBUG-level routine sample would leave no trail
+        at all for a session that never spikes."""
         assert self._drain_fd is not None
         fd = self._drain_fd
+        last_routine_log = 0.0
         while True:
             await asyncio.sleep(_BACKLOG_LOG_INTERVAL_SECONDS)
             backlog = self._pipe_backlog_bytes(fd)
@@ -194,11 +206,15 @@ class LibrespotProcess:
                 self._first_bytes_logged = True
 
             backlog_seconds = backlog / _PCM_BYTES_PER_SECOND
-            log_fn = log.warning if backlog_seconds >= _BACKLOG_WARN_SECONDS else log.debug
-            log_fn(
-                "slot %s: pipe backlog=%.2fs (%d bytes) draining=%s librespot_uptime=%.0fs",
-                self.slot.name, backlog_seconds, backlog, self._draining, self.uptime_seconds(),
-            )
+            now = time.monotonic()
+            is_warning = backlog_seconds >= _BACKLOG_WARN_SECONDS
+            if is_warning or now - last_routine_log >= _ROUTINE_LOG_INTERVAL_SECONDS:
+                last_routine_log = now
+                log_fn = log.warning if is_warning else log.info
+                log_fn(
+                    "slot %s: pipe backlog=%.2fs (%d bytes) draining=%s librespot_uptime=%.0fs",
+                    self.slot.name, backlog_seconds, backlog, self._draining, self.uptime_seconds(),
+                )
 
     async def _log_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None

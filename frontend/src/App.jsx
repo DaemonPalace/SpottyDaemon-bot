@@ -2,7 +2,6 @@ import { Navigate, Route, BrowserRouter as Router, Routes } from "react-router-d
 import "./App.css";
 import { useSupervisorStatus } from "./hooks/useSupervisorStatus";
 import JamView from "./pages/JamView";
-import Login from "./pages/Login";
 import SetupWizard from "./pages/SetupWizard";
 import SlotList from "./pages/SlotList";
 import SlotProfile from "./pages/SlotProfile";
@@ -17,7 +16,7 @@ function RootRedirect() {
   if (state === null) return null; // brief flash while the first poll resolves
   if (state === "not_configured") return <Navigate to="/setup" replace />;
   if (state === "starting" || state === "crash_looping") return <Navigate to="/starting" replace />;
-  return <Navigate to="/login" replace />;
+  return <Navigate to="/slots" replace />;
 }
 
 export default function App() {
@@ -27,7 +26,6 @@ export default function App() {
         <Route path="/jam/:jamToken" element={<JamView />} />
         <Route path="/setup" element={<SetupWizard />} />
         <Route path="/starting" element={<Starting />} />
-        <Route path="/login" element={<Login />} />
         <Route path="/slots" element={<SlotList />} />
         <Route path="/slots/:name" element={<SlotProfile />} />
         <Route path="/" element={<RootRedirect />} />

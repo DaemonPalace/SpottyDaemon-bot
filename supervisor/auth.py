@@ -1,7 +1,13 @@
 """Signed session cookie for the admin login -- stateless (no server-side
 session store), same shape as bot/api.py's _auth_middleware but a cookie
 instead of a bearer header, since this is a real browser login flow rather
-than a machine-to-machine API token."""
+than a machine-to-machine API token.
+
+The admin password gates exactly one thing: deleting a slot. Everything
+else in the dashboard (status, slot list, player/queue, linking) is open
+to anyone who can reach the supervisor -- per-slot passwords gate access
+to an individual slot's profile instead, see SlotProfile.jsx's
+PasswordGate. This is deliberately narrower than a general login wall."""
 
 import hmac
 import time
@@ -17,23 +23,12 @@ SESSION_LIFETIME_SECONDS = 7 * 24 * 3600
 # in active use never expires mid-use.
 REISSUE_THRESHOLD_SECONDS = 24 * 3600
 
-# API paths reachable with no admin session at all: first-run setup, login
-# itself, status polling (so the frontend can decide which screen to show
-# before anyone's logged in), and jam-mode routes (their own token IS the
-# auth, handled separately in proxy.py). Everything that ISN'T under /api/
-# is the frontend SPA shell (index.html, JS/CSS assets, client-side routes
-# like /setup or /login) -- that must always be servable with no session,
-# since the whole point of pages like /setup is to run before a session
-# exists. The React app itself decides what to show based on the *data*
-# it gets back from these gated API calls, not from whether the HTML
-# shell loaded.
-_PUBLIC_API_PATH_PREFIXES = (
-    "/api/supervisor/setup",
-    "/api/supervisor/status",
-    "/api/supervisor/login",
-    "/api/supervisor/logs",
-    "/api/jam/",
-)
+# The only request that needs an admin session: deleting a slot. Every
+# other route (frontend SPA shell, all other /api/* endpoints, jam-mode
+# routes -- their own token IS the auth, handled separately in proxy.py)
+# is reachable with no session at all.
+def _is_admin_gated(method: str, path: str) -> bool:
+    return method == "DELETE" and path.startswith("/api/slots/")
 
 
 def _sign(expiry: int) -> str:
@@ -64,15 +59,9 @@ def clear_cookie(response: web.StreamResponse) -> None:
     response.del_cookie(COOKIE_NAME)
 
 
-def is_public_path(path: str) -> bool:
-    if not path.startswith("/api/"):
-        return True  # frontend SPA shell -- always public, see module docstring
-    return any(path.startswith(prefix) for prefix in _PUBLIC_API_PATH_PREFIXES)
-
-
 @web.middleware
 async def session_middleware(request: web.Request, handler):
-    if is_public_path(request.path):
+    if not _is_admin_gated(request.method, request.path):
         return await handler(request)
 
     cookie_value = request.cookies.get(COOKIE_NAME)

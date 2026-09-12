@@ -10,7 +10,7 @@ export default function Starting() {
 
   useEffect(() => {
     if (state === "running") {
-      navigate("/login");
+      navigate("/slots");
     }
   }, [state, navigate]);
 

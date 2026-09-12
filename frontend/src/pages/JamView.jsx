@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useParams } from "react-router-dom";
-import { addToJamQueue, getJamNowPlaying, getJamQueue } from "../api/client";
+import { addToJamQueue, getJamPlayerState } from "../api/client";
 import { useSlotPlayer } from "../hooks/useSlotPlayer";
 
 export default function JamView() {
@@ -8,7 +8,7 @@ export default function JamView() {
   const [uri, setUri] = useState("");
   const { nowPlaying, queue, error, refresh } = useSlotPlayer({
     jamToken,
-    fetchers: { getNowPlaying: getJamNowPlaying, getQueue: getJamQueue },
+    fetchers: { getPlayerState: getJamPlayerState },
   });
 
   async function handleAdd(e) {

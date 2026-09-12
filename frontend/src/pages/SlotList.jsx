@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { deleteSlot, finishLink, listSlots, login, startLink } from "../api/client";
+import { deleteSlot, finishLink, listSlots, login, startBot, startLink } from "../api/client";
+import { useSupervisorStatus } from "../hooks/useSupervisorStatus";
 
 function LinkNewSlot({ onLinked }) {
   const [step, setStep] = useState("start"); // start -> waiting-login -> done
@@ -81,10 +82,49 @@ function LinkNewSlot({ onLinked }) {
   return <p>Linked! Refresh the list below.</p>;
 }
 
+function DeleteSlotConfirm({ name, onDeleted, onCancel }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      await login(password); // re-confirms the admin password before a destructive action
+      await deleteSlot(name);
+      onDeleted();
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="form inline">
+      <input
+        type="password"
+        placeholder="admin password to confirm"
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        required
+        autoFocus
+      />
+      <button type="submit" className="danger" disabled={busy}>Confirm delete</button>
+      <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>
+      {error && <p className="error">{error}</p>}
+    </form>
+  );
+}
+
 export default function SlotList() {
+  const { state } = useSupervisorStatus();
   const [slots, setSlots] = useState([]);
   const [error, setError] = useState(null);
   const [showLinkForm, setShowLinkForm] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(null); // slot name, or null
   const navigate = useNavigate();
 
   async function refresh() {
@@ -97,20 +137,34 @@ export default function SlotList() {
     }
   }
 
-  useEffect(() => {
-    refresh();
-  }, []);
-
-  async function handleDelete(name) {
-    const password = window.prompt(`Re-enter the admin password to delete '${name}':`);
-    if (!password) return;
+  async function handleStartBot() {
+    setStarting(true);
     try {
-      await login(password); // re-confirms the admin password before a destructive action
-      await deleteSlot(name);
-      refresh();
+      await startBot();
     } catch (err) {
-      window.alert(err.message);
+      setError(err.message);
+      setStarting(false);
     }
+  }
+
+  useEffect(() => {
+    if (state === "running") refresh();
+  }, [state]);
+
+  if (state !== null && state !== "running") {
+    return (
+      <div className="screen">
+        <h1>Slots</h1>
+        <p className="hint">
+          The bot process isn't running (status: {state}
+          {starting ? ", starting..." : ""}).
+        </p>
+        {error && <p className="error">{error}</p>}
+        <button onClick={handleStartBot} disabled={starting || state === "starting"}>
+          {starting || state === "starting" ? "Starting..." : "Start the bot"}
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -125,7 +179,18 @@ export default function SlotList() {
               <>
                 <button onClick={() => navigate(`/slots/${slot.name}`)}>{slot.name}</button>
                 <span className={slot.running ? "badge running" : "badge"}>{slot.running ? "playing" : "idle"}</span>
-                <button className="danger" onClick={() => handleDelete(slot.name)}>Delete</button>
+                {confirmingDelete === slot.name ? (
+                  <DeleteSlotConfirm
+                    name={slot.name}
+                    onDeleted={() => {
+                      setConfirmingDelete(null);
+                      refresh();
+                    }}
+                    onCancel={() => setConfirmingDelete(null)}
+                  />
+                ) : (
+                  <button className="danger" onClick={() => setConfirmingDelete(slot.name)}>Delete</button>
+                )}
               </>
             ) : (
               <span className="hint">free</span>

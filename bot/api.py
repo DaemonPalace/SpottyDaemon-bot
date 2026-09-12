@@ -12,6 +12,7 @@ tooling and a local UI, not a substitute for real auth if this is ever
 exposed beyond localhost.
 """
 
+import asyncio
 import logging
 import secrets
 import time
@@ -77,8 +78,7 @@ class DiagnosticsApi:
         app.router.add_delete("/api/slots/{name}", self._slot_delete)
         app.router.add_post("/api/slots/{name}/web-api-link/start", self._web_api_link_start)
         app.router.add_post("/api/slots/{name}/web-api-link/finish", self._web_api_link_finish)
-        app.router.add_get("/api/slots/{name}/player", self._player_now_playing)
-        app.router.add_get("/api/slots/{name}/queue", self._player_queue)
+        app.router.add_get("/api/slots/{name}/player-state", self._player_state)
         app.router.add_post("/api/slots/{name}/queue", self._player_queue_add)
         app.router.add_get("/api/slots/by-jam-token/{token}", self._slot_by_jam_token)
         app.router.add_post("/api/slots/{name}/jam-token/regenerate", self._jam_token_regenerate)
@@ -227,7 +227,7 @@ class DiagnosticsApi:
         return web.json_response({"message": content, "success": success})
 
     async def _get_slot_access_token(self, name: str) -> str:
-        """Small helper shared by the three player/queue routes. Raises an
+        """Small helper shared by the player/queue routes. Raises an
         aiohttp HTTP exception directly if the slot doesn't exist or hasn't
         completed Spotify Web API linking."""
         meta = self.slot_store.get_by_name(name)
@@ -240,15 +240,17 @@ class DiagnosticsApi:
             raise web.HTTPBadRequest(text=f"slot {name!r} hasn't completed Spotify Web API linking")
         return token
 
-    async def _player_now_playing(self, request: web.Request) -> web.Response:
+    async def _player_state(self, request: web.Request) -> web.Response:
+        """Now-playing + queue in one round trip -- the dashboard and jam
+        view poll this every few seconds, and now-playing/queue used to be
+        two separate Spotify API calls per poll for no reason (they're
+        always needed together)."""
         token = await self._get_slot_access_token(request.match_info["name"])
-        now_playing = await spotify_player_api.get_now_playing(token)
-        return web.json_response({"now_playing": now_playing})
-
-    async def _player_queue(self, request: web.Request) -> web.Response:
-        token = await self._get_slot_access_token(request.match_info["name"])
-        queue = await spotify_player_api.get_queue(token)
-        return web.json_response(queue)
+        now_playing, queue = await asyncio.gather(
+            spotify_player_api.get_now_playing(token),
+            spotify_player_api.get_queue(token),
+        )
+        return web.json_response({"now_playing": now_playing, "queue": queue})
 
     async def _player_queue_add(self, request: web.Request) -> web.Response:
         token = await self._get_slot_access_token(request.match_info["name"])

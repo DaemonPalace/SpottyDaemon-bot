@@ -54,14 +54,9 @@ async def proxy_api(request: web.Request) -> web.Response:
     return await _forward(request, request.path)
 
 
-async def jam_player(request: web.Request) -> web.Response:
+async def jam_player_state(request: web.Request) -> web.Response:
     slot_name = await _resolve_jam_token(request.match_info["token"])
-    return await _forward(request, f"/api/slots/{slot_name}/player")
-
-
-async def jam_queue_get(request: web.Request) -> web.Response:
-    slot_name = await _resolve_jam_token(request.match_info["token"])
-    return await _forward(request, f"/api/slots/{slot_name}/queue")
+    return await _forward(request, f"/api/slots/{slot_name}/player-state")
 
 
 async def jam_queue_post(request: web.Request) -> web.Response:

@@ -3,8 +3,7 @@ import { useParams } from "react-router-dom";
 import {
   addToQueue,
   finishWebApiLink,
-  getNowPlaying,
-  getQueue,
+  getPlayerState,
   regenerateJamToken,
   selectSlot,
   startWebApiLink,
@@ -99,7 +98,7 @@ function WebApiLinkFlow({ name, onLinked }) {
 function PlayerPanel({ name }) {
   const { nowPlaying, queue, error, refresh } = useSlotPlayer({
     name,
-    fetchers: { getNowPlaying, getQueue },
+    fetchers: { getPlayerState },
   });
   const [uri, setUri] = useState("");
 

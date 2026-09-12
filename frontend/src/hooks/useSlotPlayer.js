@@ -16,17 +16,25 @@ export function useSlotPlayer({ name, jamToken, fetchers }) {
 
   const key = name || jamToken;
 
+  const getPlayerState = fetchers.getPlayerState;
+
   const refresh = useCallback(async () => {
     if (!key) return;
     try {
-      const state = await fetchers.getPlayerState(key);
+      const state = await getPlayerState(key);
       setNowPlaying(state.now_playing);
       setQueue(state.queue);
       setError(null);
     } catch (err) {
       setError(err);
     }
-  }, [key, fetchers]);
+    // `fetchers` is a fresh object literal on every caller render, but the
+    // function it carries is a stable module-level export -- depending on
+    // the object itself instead of this would remount the poll effect
+    // below on every render (new `refresh` identity), which restarts
+    // `tick()` immediately each time and turns the 3s poll into a
+    // tight loop bound only by round-trip latency.
+  }, [key, getPlayerState]);
 
   useEffect(() => {
     if (!key) return;

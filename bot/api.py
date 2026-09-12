@@ -80,6 +80,9 @@ class DiagnosticsApi:
         app.router.add_post("/api/slots/{name}/web-api-link/finish", self._web_api_link_finish)
         app.router.add_get("/api/slots/{name}/player-state", self._player_state)
         app.router.add_post("/api/slots/{name}/queue", self._player_queue_add)
+        app.router.add_get("/api/slots/{name}/search", self._player_search)
+        app.router.add_get("/api/slots/{name}/library/albums", self._library_albums)
+        app.router.add_get("/api/slots/{name}/albums/{album_id}", self._album_detail)
         app.router.add_get("/api/slots/by-jam-token/{token}", self._slot_by_jam_token)
         app.router.add_post("/api/slots/{name}/jam-token/regenerate", self._jam_token_regenerate)
         return app
@@ -260,6 +263,26 @@ class DiagnosticsApi:
             raise web.HTTPBadRequest(text="uri is required")
         await spotify_player_api.add_to_queue(token, uri)
         return web.json_response({"queued": uri})
+
+    async def _player_search(self, request: web.Request) -> web.Response:
+        token = await self._get_slot_access_token(request.match_info["name"])
+        query = request.query.get("q", "").strip()
+        if not query:
+            return web.json_response({"tracks": []})
+        tracks = await spotify_player_api.search_tracks(token, query)
+        return web.json_response({"tracks": tracks})
+
+    async def _library_albums(self, request: web.Request) -> web.Response:
+        token = await self._get_slot_access_token(request.match_info["name"])
+        albums = await spotify_player_api.get_saved_albums(token)
+        if albums is None:
+            return web.json_response({"albums": None, "needs_reauth": True})
+        return web.json_response({"albums": albums})
+
+    async def _album_detail(self, request: web.Request) -> web.Response:
+        token = await self._get_slot_access_token(request.match_info["name"])
+        album = await spotify_player_api.get_album(token, request.match_info["album_id"])
+        return web.json_response(album)
 
     async def _slot_by_jam_token(self, request: web.Request) -> web.Response:
         token = request.match_info["token"]

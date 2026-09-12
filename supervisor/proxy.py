@@ -64,6 +64,11 @@ async def jam_queue_post(request: web.Request) -> web.Response:
     return await _forward(request, f"/api/slots/{slot_name}/queue")
 
 
+async def jam_search(request: web.Request) -> web.Response:
+    slot_name = await _resolve_jam_token(request.match_info["token"])
+    return await _forward(request, f"/api/slots/{slot_name}/search")
+
+
 async def _resolve_jam_token(token: str) -> str:
     token_resp = await _forward_raw(f"/api/slots/by-jam-token/{token}")
     if token_resp.status != 200:

@@ -45,7 +45,17 @@ export const regenerateJamToken = (name) =>
 // bot/api.py's _player_state
 export const getPlayerState = (name) => request("GET", `/api/slots/${encodeURIComponent(name)}/player-state`);
 export const addToQueue = (name, uri) => request("POST", `/api/slots/${encodeURIComponent(name)}/queue`, { uri });
+export const searchTracks = (name, q) =>
+  request("GET", `/api/slots/${encodeURIComponent(name)}/search?q=${encodeURIComponent(q)}`);
+
+// Library (admin only -- needs the user-library-read scope, see
+// bot/spotify_player_api.py's get_saved_albums)
+export const getLibraryAlbums = (name) => request("GET", `/api/slots/${encodeURIComponent(name)}/library/albums`);
+export const getAlbum = (name, albumId) =>
+  request("GET", `/api/slots/${encodeURIComponent(name)}/albums/${encodeURIComponent(albumId)}`);
 
 // Jam mode (no admin session, token-scoped)
 export const getJamPlayerState = (token) => request("GET", `/api/jam/${encodeURIComponent(token)}/player-state`);
 export const addToJamQueue = (token, uri) => request("POST", `/api/jam/${encodeURIComponent(token)}/queue`, { uri });
+export const searchJamTracks = (token, q) =>
+  request("GET", `/api/jam/${encodeURIComponent(token)}/search?q=${encodeURIComponent(q)}`);

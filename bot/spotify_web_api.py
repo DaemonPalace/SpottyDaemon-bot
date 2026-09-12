@@ -37,9 +37,12 @@ log = logging.getLogger("spotify_web_api")
 AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 
-# user-modify-playback-state covers the future /me/player/queue add;
-# user-read-currently-playing + user-read-playback-state cover now-playing.
-SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing"
+# user-modify-playback-state covers /me/player/queue add; user-read-currently-playing
+# + user-read-playback-state cover now-playing; user-library-read covers the
+# dashboard's "your library" saved-albums browser. A slot linked before
+# user-library-read was added needs to re-run /link-web-api to pick it up --
+# see spotify_player_api.get_saved_albums's None return for how that's surfaced.
+SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing user-library-read"
 
 PENDING_TIMEOUT_SECONDS = 600
 # Refresh a bit early so a token in active use doesn't expire mid-request.

@@ -114,6 +114,7 @@ class _PendingWebApiLink:
     code_verifier: str
     state: str
     started_at: float
+    url: str
 
 
 @dataclass
@@ -139,6 +140,14 @@ class WebApiLinkManager:
         pending = self._pending.get(user_id)
         return pending.slot_index if pending is not None else None
 
+    def authorize_url(self, user_id: str) -> str | None:
+        """The Spotify login url for this user's pending link, if any --
+        lets callers (Discord's button+modal flow, the web dashboard's
+        link-in-new-tab button) surface it directly instead of scraping it
+        out of the human-readable message."""
+        pending = self._pending.get(user_id)
+        return pending.url if pending is not None else None
+
     def start_link(self, user_id: str, slot_index: int) -> tuple[str, bool]:
         if not config.SPOTIFY_CLIENT_ID:
             return (
@@ -148,16 +157,14 @@ class WebApiLinkManager:
             )
         verifier, challenge = _generate_pkce_pair()
         state = secrets.token_urlsafe(16)
-        self._pending[user_id] = _PendingWebApiLink(
-            slot_index=slot_index, code_verifier=verifier, state=state, started_at=time.monotonic()
-        )
         url = _build_authorize_url(state, challenge)
+        self._pending[user_id] = _PendingWebApiLink(
+            slot_index=slot_index, code_verifier=verifier, state=state, started_at=time.monotonic(), url=url
+        )
         return (
-            f"**Step 1:** open this link and log in with Spotify:\n{url}\n\n"
-            "**Step 2:** your browser will fail to load the page it redirects to -- "
-            "that's expected. Copy the FULL url from your browser's address bar.\n\n"
-            f"**Step 3:** run `/link-web-api-finish` and paste that url in, within "
-            f"{PENDING_TIMEOUT_SECONDS // 60} minutes.",
+            "Log in with Spotify using the button below. Your browser will fail to load the page "
+            "it redirects to next -- that's expected. Copy the FULL url from your browser's "
+            f"address bar and paste it back, within {PENDING_TIMEOUT_SECONDS // 60} minutes.",
             True,
         )
 

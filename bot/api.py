@@ -179,7 +179,10 @@ class DiagnosticsApi:
             raise web.HTTPBadRequest(text="slot_name and password are required")
         user_id = "web:" + secrets.token_hex(8)
         content, success = await self.link_manager.start_link(user_id, slot_name, password)
-        return web.json_response({"message": content, "success": success, "user_id": user_id})
+        authorize_url = self.link_manager.authorize_url(user_id)
+        return web.json_response(
+            {"message": content, "success": success, "user_id": user_id, "authorize_url": authorize_url}
+        )
 
     async def _link_finish(self, request: web.Request) -> web.Response:
         body = await request.json()
@@ -230,7 +233,10 @@ class DiagnosticsApi:
             raise web.HTTPBadRequest(text=f"slot {name!r} isn't claimed yet -- link it first")
         user_id = "web:" + secrets.token_hex(8)
         content, success = self.web_api_link_manager.start_link(user_id, meta.index)
-        return web.json_response({"message": content, "success": success, "user_id": user_id})
+        authorize_url = self.web_api_link_manager.authorize_url(user_id)
+        return web.json_response(
+            {"message": content, "success": success, "user_id": user_id, "authorize_url": authorize_url}
+        )
 
     async def _web_api_link_finish(self, request: web.Request) -> web.Response:
         body = await request.json()

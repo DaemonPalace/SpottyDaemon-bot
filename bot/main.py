@@ -68,6 +68,48 @@ class PasswordModal(discord.ui.Modal):
         await self._on_submit_callback(interaction, str(self.password.value))
 
 
+class PasteUrlModal(discord.ui.Modal):
+    """Popup for pasting the failed-redirect url back -- the clean
+    alternative to typing `/link-finish url:...` by hand. Field is optional:
+    leaving it blank means the page loaded fine (bot and browser on the same
+    machine)."""
+
+    pasted_url = discord.ui.TextInput(
+        label="Redirect URL (blank if the page loaded)",
+        style=discord.TextStyle.short,
+        required=False,
+        max_length=500,
+    )
+
+    def __init__(self, title: str, on_submit_callback):
+        super().__init__(title=title)
+        self._on_submit_callback = on_submit_callback
+
+    async def on_submit(self, interaction: discord.Interaction):
+        value = str(self.pasted_url.value).strip() or None
+        await self._on_submit_callback(interaction, value)
+
+
+class LinkStartView(discord.ui.View):
+    """Posted alongside a /link or /link-web-api reply: a Link-style button
+    opens Spotify's login directly in a new tab (no copy/paste for step
+    one), and a second button pops a paste-back dialog for step two. The
+    older /link-finish and /link-web-api-finish commands still work too,
+    as a fallback for anyone who'd rather type."""
+
+    def __init__(self, authorize_url: str, modal_title: str, on_finish_callback):
+        super().__init__(timeout=900)
+        self.add_item(
+            discord.ui.Button(label="Log in with Spotify", style=discord.ButtonStyle.link, url=authorize_url)
+        )
+        self._modal_title = modal_title
+        self._on_finish_callback = on_finish_callback
+
+    @discord.ui.button(label="Paste redirect URL", style=discord.ButtonStyle.primary)
+    async def paste(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(PasteUrlModal(self._modal_title, self._on_finish_callback))
+
+
 # These fire over the gateway, the default and only command path for a
 # self-hosted/standalone install (no Lambda/SQS relay configured). The
 # legacy AWS deployment instead sets a Discord Interactions Endpoint URL,
@@ -201,10 +243,20 @@ async def play(interaction: discord.Interaction, track: str, mode: app_commands.
 async def link(interaction: discord.Interaction, slotname: str):
     user_id = str(interaction.user.id)
 
+    async def handle_finish(modal_interaction: discord.Interaction, pasted_url: str | None):
+        await modal_interaction.response.defer(ephemeral=True)
+        content, ephemeral = await do_link_finish(user_id, pasted_url, link_manager)
+        await modal_interaction.followup.send(content, ephemeral=ephemeral)
+
     async def handle_submit(modal_interaction: discord.Interaction, password: str):
         await modal_interaction.response.defer(ephemeral=True)
         content, ephemeral = await do_link(user_id, slotname, password, link_manager)
-        await modal_interaction.followup.send(content, ephemeral=ephemeral)
+        authorize_url = link_manager.authorize_url(user_id)
+        if authorize_url:
+            view = LinkStartView(authorize_url, f"Finish linking '{slotname}'", handle_finish)
+            await modal_interaction.followup.send(content, view=view, ephemeral=ephemeral)
+        else:
+            await modal_interaction.followup.send(content, ephemeral=ephemeral)
 
     await interaction.response.send_modal(PasswordModal(f"Set a password for '{slotname}'", handle_submit))
 
@@ -228,10 +280,20 @@ async def delete_slot(interaction: discord.Interaction, name: str):
 @tree.command(name="link-web-api", description="Grant this bot Spotify Web API access for an already-linked slot")
 @app_commands.describe(slotname="Slot name (must already be linked via /link)")
 async def link_web_api(interaction: discord.Interaction, slotname: str):
-    content, ephemeral = await do_link_web_api(
-        str(interaction.user.id), slotname, slot_store, web_api_link_manager
-    )
-    await interaction.response.send_message(content, ephemeral=ephemeral)
+    user_id = str(interaction.user.id)
+    content, ephemeral = await do_link_web_api(user_id, slotname, slot_store, web_api_link_manager)
+    authorize_url = web_api_link_manager.authorize_url(user_id)
+    if authorize_url:
+
+        async def handle_finish(modal_interaction: discord.Interaction, pasted_url: str | None):
+            await modal_interaction.response.defer(ephemeral=True)
+            content2, ephemeral2 = await do_link_web_api_finish(user_id, pasted_url or "", web_api_link_manager)
+            await modal_interaction.followup.send(content2, ephemeral=ephemeral2)
+
+        view = LinkStartView(authorize_url, f"Finish Web API link for '{slotname}'", handle_finish)
+        await interaction.response.send_message(content, view=view, ephemeral=ephemeral)
+    else:
+        await interaction.response.send_message(content, ephemeral=ephemeral)
 
 
 @tree.command(name="link-web-api-finish", description="Finish /link-web-api by pasting the url your browser failed to load")

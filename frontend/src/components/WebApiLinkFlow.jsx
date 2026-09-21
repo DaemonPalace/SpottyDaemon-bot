@@ -3,23 +3,34 @@ import { finishWebApiLink, startWebApiLink } from "../api/client";
 
 /** Drives /link-web-api's web equivalent for one slot. Used both for the
  * initial "no Web API link yet" case and for re-linking to pick up a newer
- * OAuth scope (Spotify re-prompts for consent either way). */
+ * OAuth scope (Spotify re-prompts for consent either way).
+ *
+ * One click does both halves of step one: opens Spotify's login in a new
+ * tab (via a blank tab grabbed synchronously in the click handler, so
+ * popup blockers don't eat it once the url arrives after the await) and
+ * reveals the paste-back dialog for step two, instead of asking for two
+ * separate clicks. */
 export default function WebApiLinkFlow({ name, prompt, onLinked }) {
   const [step, setStep] = useState("start");
   const [message, setMessage] = useState("");
+  const [authorizeUrl, setAuthorizeUrl] = useState(null);
   const [pastedUrl, setPastedUrl] = useState("");
   const [userId, setUserId] = useState(null);
   const [error, setError] = useState(null);
 
   async function handleStart() {
     setError(null);
+    const newTab = window.open("", "_blank");
     try {
       const data = await startWebApiLink(name);
       if (!data.success) throw new Error(data.message);
+      if (newTab) newTab.location = data.authorize_url;
       setMessage(data.message);
+      setAuthorizeUrl(data.authorize_url);
       setUserId(data.user_id);
       setStep("finish");
     } catch (err) {
+      if (newTab) newTab.close();
       setError(err.message);
     }
   }
@@ -48,9 +59,12 @@ export default function WebApiLinkFlow({ name, prompt, onLinked }) {
 
   return (
     <form onSubmit={handleFinish} className="form link-flow">
-      <p className="hint" style={{ whiteSpace: "pre-wrap" }}>{message}</p>
+      <p className="hint">{message}</p>
+      <button type="button" className="ghost" onClick={() => window.open(authorizeUrl, "_blank", "noopener,noreferrer")}>
+        Open Spotify login again
+      </button>
       <label>
-        Failed-redirect url
+        Redirect URL
         <input value={pastedUrl} onChange={(e) => setPastedUrl(e.target.value)} required />
       </label>
       {error && <p className="error">{error}</p>}

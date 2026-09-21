@@ -11,6 +11,7 @@ export default function CreateProfileModal({ onClose, onCreated }) {
   const [slotName, setSlotName] = useState("");
   const [password, setPassword] = useState("");
   const [authorizeMessage, setAuthorizeMessage] = useState("");
+  const [authorizeUrl, setAuthorizeUrl] = useState(null);
   const [pastedUrl, setPastedUrl] = useState("");
   const [userId, setUserId] = useState(null);
   const [error, setError] = useState(null);
@@ -20,13 +21,19 @@ export default function CreateProfileModal({ onClose, onCreated }) {
     e.preventDefault();
     setError(null);
     setBusy(true);
+    // Grabbed synchronously in this click handler so popup blockers don't
+    // eat it once the real url arrives after the await below.
+    const newTab = window.open("", "_blank");
     try {
       const data = await startLink(slotName.trim().toLowerCase(), password);
       if (!data.success) throw new Error(data.message);
+      if (newTab) newTab.location = data.authorize_url;
       setAuthorizeMessage(data.message);
+      setAuthorizeUrl(data.authorize_url);
       setUserId(data.user_id);
       setStep("waiting-login");
     } catch (err) {
+      if (newTab) newTab.close();
       setError(err.message);
     } finally {
       setBusy(false);
@@ -72,11 +79,16 @@ export default function CreateProfileModal({ onClose, onCreated }) {
       {step === "waiting-login" && (
         <form onSubmit={handleFinish} className="form">
           <h3>Link Spotify</h3>
-          <p className="hint" style={{ whiteSpace: "pre-wrap" }}>
-            {authorizeMessage}
-          </p>
+          <p className="hint">{authorizeMessage}</p>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => window.open(authorizeUrl, "_blank", "noopener,noreferrer")}
+          >
+            Open Spotify login again
+          </button>
           <label>
-            Failed-redirect url (leave blank if the page loaded fine)
+            Redirect url (leave blank if the page loaded fine)
             <input
               value={pastedUrl}
               onChange={(e) => setPastedUrl(e.target.value)}

@@ -52,6 +52,7 @@ class PendingLink:
     password: str
     started_at: float
     process: asyncio.subprocess.Process
+    url: str
 
 
 class LinkManager:
@@ -105,6 +106,14 @@ class LinkManager:
         claim before calling finish_link, which pops the pending entry."""
         pending = self._pending.get(user_id)
         return pending.slot_index if pending is not None else None
+
+    def authorize_url(self, user_id: str) -> str | None:
+        """The Spotify login url for this user's pending link, if any --
+        lets callers (Discord's button+modal flow, the web dashboard's
+        link-in-new-tab button) surface it directly instead of scraping it
+        out of the human-readable message."""
+        pending = self._pending.get(user_id)
+        return pending.url if pending is not None else None
 
     async def start_link(self, user_id: str, slot_name: str, password: str) -> tuple[str, bool]:
         """Returns (message, success)."""
@@ -174,17 +183,14 @@ class LinkManager:
             password=password,
             started_at=time.monotonic(),
             process=process,
+            url=url,
         )
         return (
-            f"**Step 1:** open this link and log in with the Spotify account for **{slot_name}**:\n"
-            f"{url}\n\n"
-            "**Step 2:** after logging in, your browser will most likely fail to load the page "
-            "it redirects to next (expected, unless the bot happens to be running on this same "
-            "machine, in which case it may just work). If it fails, copy the FULL url from your "
-            "browser's address bar at that point (it starts with `http://127.0.0.1`).\n\n"
-            f"**Step 3:** run `/link-finish` within {config.LINK_TIMEOUT_SECONDS // 60} minutes -- "
-            "paste that url in if you had to copy one, or leave it blank if the page loaded fine "
-            "(same machine as the bot).",
+            f"Log in with the Spotify account for **{slot_name}** using the button below. "
+            "Your browser will most likely fail to load the page it redirects to next (expected, "
+            "unless the bot happens to be running on this same machine) -- if so, copy the FULL "
+            "url from your browser's address bar and paste it back, or leave it blank if the page "
+            f"loaded fine. You have {config.LINK_TIMEOUT_SECONDS // 60} minutes.",
             True,
         )
 

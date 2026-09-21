@@ -395,11 +395,19 @@ async def do_play_track(
     token, error = await resolve_play_token(guild_id, store, web_api_link_manager)
     if error is not None:
         return error
-    if mode == "play_now":
-        await spotify_player_api.play_uri(token, track_uri)
-        return "Playing now.", True
-    await spotify_player_api.add_to_queue(token, track_uri)
-    return "Added to queue.", True
+    try:
+        if mode == "play_now":
+            await spotify_player_api.play_uri(token, track_uri)
+            return "Playing now.", True
+        await spotify_player_api.add_to_queue(token, track_uri)
+        return "Added to queue.", True
+    except Exception:
+        # Most commonly Spotify's 404 NO_ACTIVE_DEVICE -- librespot hasn't
+        # been picked up as the active Connect device yet. An uncaught
+        # exception here would otherwise leave a relayed button click
+        # stuck on "thinking..." forever (interaction_relay.py's outer
+        # handler logs and swallows it with no followup sent at all).
+        return "That didn't work -- is Spotify Connect active on this slot? Try /connect first.", True
 
 
 def active_sessions_snapshot() -> list[dict]:

@@ -117,14 +117,6 @@ def _track_result_components(results: list[dict]) -> list[dict]:
     return rows
 
 
-def _format_track_results(results: list[dict]) -> str:
-    lines = []
-    for i, track in enumerate(results, 1):
-        artists = ", ".join(a["name"] for a in track.get("artists", []))
-        lines.append(f"{i}. **{track['name']}** — {artists}")
-    return "\n".join(lines)
-
-
 class InteractionRelay:
     def __init__(
         self,
@@ -196,14 +188,14 @@ class InteractionRelay:
                 await self._run_component(interaction, guild)
             else:
                 if member is None:
-                    content, ephemeral, components = (
-                        "Couldn't find you in this server's member cache — try again in a moment.",
-                        True,
-                        None,
+                    await self._followup(
+                        interaction, "Couldn't find you in this server's member cache — try again in a moment.", True
                     )
                 else:
-                    content, ephemeral, components = await self._run_command(interaction, guild, member)
-                await self._followup(interaction, content, ephemeral, components=components)
+                    result = await self._run_command(interaction, guild, member)
+                    if result is not None:
+                        content, ephemeral, components = result
+                        await self._followup(interaction, content, ephemeral, components=components)
         except Exception:
             log.exception("failed to process relayed interaction")
         finally:
@@ -215,10 +207,13 @@ class InteractionRelay:
 
     async def _run_command(
         self, interaction: dict, guild: discord.Guild, member: discord.Member
-    ) -> tuple[str, bool, list[dict] | None]:
-        """Returns (content, ephemeral, components) -- components is only
-        ever non-None for link-web-api/link's modal-submit (the login+paste
-        buttons) and /play (the per-track Play/Queue buttons)."""
+    ) -> tuple[str, bool, list[dict] | None] | None:
+        """Returns (content, ephemeral, components) for _handle to post as
+        a single followup -- components is only ever non-None for
+        link-web-api/link's modal-submit (the login+paste buttons). Returns
+        None if this already sent its own followup(s) (/play posts one
+        message per track, so it can't go through the single-followup
+        path)."""
         if interaction.get("type") == TYPE_MODAL_SUBMIT:
             return await self._run_modal_submit(interaction, guild, member)
 
@@ -249,19 +244,29 @@ class InteractionRelay:
         elif command_name == "jam":
             content, ephemeral = await self._run_jam(interaction, guild)
         elif command_name == "play":
-            return await self._run_play(guild, options.get("query", ""))
+            await self._run_play(interaction, guild, options.get("query", ""))
+            return None
         else:
             content, ephemeral = f"Unknown command: {command_name}", True
         return content, ephemeral, None
 
-    async def _run_play(self, guild: discord.Guild, query: str) -> tuple[str, bool, list[dict] | None]:
+    async def _run_play(self, interaction: dict, guild: discord.Guild, query: str) -> None:
+        """Sends its own followup(s) rather than returning through the
+        single-reply path: one ephemeral message per track (each with its
+        own Play/Queue buttons directly below it), not one message with
+        every track's buttons crammed below all of them."""
         results, error = await do_search_tracks(guild.id, query, self.store, self.web_api_link_manager)
         if error is not None:
             content, ephemeral = error
-            return content, ephemeral, None
+            await self._followup(interaction, content, ephemeral)
+            return
         if not results:
-            return f"No tracks found for '{query}'.", True, None
-        return _format_track_results(results), True, _track_result_components(results)
+            await self._followup(interaction, f"No tracks found for '{query}'.", True)
+            return
+        for i, track in enumerate(results, 1):
+            artists = ", ".join(a["name"] for a in track.get("artists", []))
+            content = f"{i}. **{track['name']}** — {artists}"
+            await self._followup(interaction, content, True, components=_track_result_components([track]))
 
     async def _run_jam(self, interaction: dict, guild: discord.Guild) -> tuple[str, bool]:
         slot_index, error = resolve_jam_slot(guild.id, self.store)

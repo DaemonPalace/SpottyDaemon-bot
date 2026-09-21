@@ -186,14 +186,6 @@ async def jam(interaction: discord.Interaction):
     await interaction.response.send_message("Jam panel posted above.", ephemeral=True)
 
 
-def _format_track_results(results: list[dict]) -> str:
-    lines = []
-    for i, track in enumerate(results, 1):
-        artists = ", ".join(a["name"] for a in track.get("artists", []))
-        lines.append(f"{i}. **{track['name']}** — {artists}")
-    return "\n".join(lines)
-
-
 class TrackResultsView(discord.ui.View):
     """Up to 5 tracks, each with its own Play-now/Queue buttons -- replaces
     the old autocomplete-and-guess-the-top-hit design (autocomplete can't
@@ -239,9 +231,15 @@ async def play(interaction: discord.Interaction, query: str):
     if not results:
         await interaction.followup.send(f"No tracks found for '{query}'.", ephemeral=True)
         return
-    await interaction.followup.send(
-        _format_track_results(results), view=TrackResultsView(interaction.guild.id, results), ephemeral=True
-    )
+    # One message per track (each with its own Play/Queue buttons directly
+    # below it) rather than one message with every track's buttons crammed
+    # below all of them.
+    for i, track in enumerate(results, 1):
+        artists = ", ".join(a["name"] for a in track.get("artists", []))
+        content = f"{i}. **{track['name']}** — {artists}"
+        await interaction.followup.send(
+            content, view=TrackResultsView(interaction.guild.id, [track]), ephemeral=True
+        )
 
 
 @tree.command(name="link", description="Claim a free Spotify slot and link your own Spotify account")

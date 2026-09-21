@@ -218,6 +218,15 @@ def _attach_source(
     # Stop competing with ffmpeg for bytes on this slot's pipe -- see
     # librespot_manager.py's module docstring for why this exists.
     proc.pause_draining()
+    # Discard whatever's queued as of right now -- ffmpeg hasn't spawned
+    # yet (that happens below), so without this, whatever built up before
+    # attach (or during the idle-drain-paused/ffmpeg-not-listening-yet gap
+    # that just opened) plays out first once ffmpeg's read loop starts,
+    # which is exactly the "distorted, sped-up first few seconds" symptom.
+    # Same mechanism as flush_slot_pipe()'s use around API-driven track
+    # changes, just for the attach-a-new-reader case instead of the
+    # swap-which-track-is-playing case.
+    proc.flush()
 
     def _after_playback(error: Exception | None) -> None:
         if error:

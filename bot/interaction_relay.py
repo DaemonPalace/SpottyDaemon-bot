@@ -49,7 +49,7 @@ from commands import (
     do_reconnect,
     resolve_jam_slot,
 )
-from config import INTERACTIONS_QUEUE_URL
+from config import AWS_REGION, INTERACTIONS_QUEUE_URL
 from jam import JamManager
 from librespot_manager import LibrespotManager
 from slot_store import SlotStore
@@ -97,7 +97,13 @@ class InteractionRelay:
         # Built here, not __init__, so importing/constructing this class
         # never requires boto3/AWS credentials -- only actually starting the
         # relay (main.py only does so when INTERACTIONS_QUEUE_URL is set).
-        self._sqs = boto3.client("sqs")
+        # region_name explicit for the same reason bot/config.py's Secrets
+        # Manager client needs it -- botocore doesn't reliably auto-resolve
+        # a region under this systemd service. An unhandled exception here
+        # would abort the rest of on_ready() silently (discord.py's default
+        # on_error just logs it), taking link_manager/diagnostics_api's
+        # own .start() calls down with it since they run after this one.
+        self._sqs = boto3.client("sqs", region_name=AWS_REGION)
         self._task = asyncio.create_task(self._loop())
 
     def stop(self) -> None:

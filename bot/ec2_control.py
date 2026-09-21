@@ -5,6 +5,8 @@ import logging
 import boto3
 import urllib.request
 
+from config import AWS_REGION
+
 log = logging.getLogger("ec2_control")
 
 _METADATA_BASE = "http://169.254.169.254/latest"
@@ -32,6 +34,9 @@ def get_instance_id() -> str:
 
 def stop_this_instance(region: str | None = None) -> None:
     instance_id = get_instance_id()
-    client = boto3.client("ec2", region_name=region)
+    # Same NoRegionError risk as bot/config.py's Secrets Manager client and
+    # interaction_relay.py's SQS client -- botocore doesn't reliably
+    # auto-resolve a region under this systemd service.
+    client = boto3.client("ec2", region_name=region or AWS_REGION)
     log.warning("idle timeout reached -> stopping instance %s", instance_id)
     client.stop_instances(InstanceIds=[instance_id])

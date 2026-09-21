@@ -431,8 +431,7 @@ async def do_play_track(
             # track is playing -- add_to_queue doesn't cause an immediate
             # transition, so it's left alone.
             flush_slot_pipe(slot_index, store, librespot)
-            device_id = await _resolve_device_id(token, slot_index, librespot)
-            await spotify_player_api.play_uri(token, track_uri, device_id=device_id)
+            await _activate_then_play(token, slot_index, track_uri, librespot)
             return "Playing now.", True
 
         # Spotify's queue-add endpoint can only append to an *existing*
@@ -442,8 +441,7 @@ async def do_play_track(
         now_playing = await spotify_player_api.get_now_playing(token)
         if not now_playing or not now_playing.get("is_playing"):
             flush_slot_pipe(slot_index, store, librespot)
-            device_id = await _resolve_device_id(token, slot_index, librespot)
-            await spotify_player_api.play_uri(token, track_uri, device_id=device_id)
+            await _activate_then_play(token, slot_index, track_uri, librespot)
             return "Nothing was playing, so playing this now instead.", True
 
         await spotify_player_api.add_to_queue(token, track_uri)
@@ -457,17 +455,23 @@ async def do_play_track(
         return "That didn't work -- is Spotify Connect active on this slot? Try /connect first.", True
 
 
-async def _resolve_device_id(token: str, slot_index: int, librespot: LibrespotManager) -> str | None:
-    """Best-effort: play_uri still works without a device_id once some
-    device is already active, so a lookup failure here shouldn't block
-    playback -- it only makes cold activation faster/more reliable."""
+async def _activate_then_play(token: str, slot_index: int, track_uri: str, librespot: LibrespotManager) -> None:
+    """Activates the slot's device on its own first if it isn't already
+    the active one, THEN plays the track as a separate call -- see
+    spotify_player_api.transfer_playback for why combining "activate" and
+    "load this contextless track" into a single /me/player/play call
+    caused a reload-and-fail loop. A lookup/transfer failure here isn't
+    fatal: play_uri still works fine on its own once some device is
+    already active, which is the common (non-cold) case."""
     slot = librespot.slot_by_index(slot_index)
-    if slot is None:
-        return None
-    try:
-        return await spotify_player_api.find_device_id(token, slot.name)
-    except Exception:
-        return None
+    if slot is not None:
+        try:
+            device = await spotify_player_api.find_device(token, slot.name)
+            if device and not device.get("is_active") and device.get("id"):
+                await spotify_player_api.transfer_playback(token, device["id"])
+        except Exception:
+            log.exception("failed to activate device for slot index %s", slot_index)
+    await spotify_player_api.play_uri(token, track_uri)
 
 
 def active_sessions_snapshot() -> list[dict]:

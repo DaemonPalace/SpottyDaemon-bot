@@ -123,18 +123,32 @@ async def play(access_token: str) -> None:
     await _player_put(access_token, "/me/player/play")
 
 
-async def play_uri(access_token: str, track_uri: str, device_id: str | None = None) -> None:
+async def play_uri(access_token: str, track_uri: str) -> None:
     """Plays a specific track immediately, replacing whatever's active --
     used by /play's "Play now" mode. Unlike play()'s bare resume, this needs
     a JSON body naming the track (Spotify's "start/resume playback" endpoint
-    doubles as both). Pass device_id (see find_device_id) when the slot
-    might not already be Spotify's "currently active device" -- without
-    it, Spotify has to implicitly resolve one, which doesn't exist yet the
-    very first time a slot plays anything (or any time it's gone fully
-    idle) and makes that activation slower and audibly rougher than a
-    warm transition between two already-active tracks."""
-    params = {"device_id": device_id} if device_id else None
-    await _player_put(access_token, "/me/player/play", params=params, json_body={"uris": [track_uri]})
+    doubles as both). Deliberately takes no device_id: combining "activate
+    this device" and "load this contextless track" in a single call was
+    observed to leave librespot's Connect state machine flagging "device
+    became inactive" almost immediately after loading, causing a
+    reload-and-fail loop. commands.py's _activate_then_play calls
+    transfer_playback separately first when the device isn't already
+    active, so by the time this runs the device is always already warm."""
+    await _player_put(access_token, "/me/player/play", json_body={"uris": [track_uri]})
+
+
+async def transfer_playback(access_token: str, device_id: str) -> None:
+    """Makes device_id the active Spotify Connect device without asking it
+    to play anything specific. Spotify's own documented way to activate a
+    device -- combining activation with "and also load this contextless
+    track" in a single /me/player/play call (device_id + a bare uris body)
+    was observed to leave librespot's Connect state machine flagging
+    "device became inactive" almost immediately after loading, stopping
+    playback and triggering the self-heal reattach in commands.py, which
+    made librespot reload the same track from scratch -- a loop that
+    repeated until the reattach cap gave up. Activating on its own first,
+    as a separate call, avoids that."""
+    await _player_put(access_token, "/me/player", json_body={"device_ids": [device_id], "play": False})
 
 
 async def get_devices(access_token: str) -> list[dict]:
@@ -150,15 +164,15 @@ async def get_devices(access_token: str) -> list[dict]:
             return body.get("devices", [])
 
 
-async def find_device_id(access_token: str, device_name: str) -> str | None:
-    """Resolves librespot's Spotify Connect device_id by the name it
-    registered with (SpotifySlot.name, e.g. "discord-bot-1", not the
-    slot's friendly Discord-facing name) -- see play_uri for why passing
-    this explicitly matters."""
+async def find_device(access_token: str, device_name: str) -> dict | None:
+    """Resolves librespot's Spotify Connect device object (id, is_active,
+    ...) by the name it registered with (SpotifySlot.name, e.g.
+    "discord-bot-1", not the slot's friendly Discord-facing name) -- see
+    play_uri/transfer_playback for why this matters."""
     devices = await get_devices(access_token)
     for device in devices:
         if device.get("name") == device_name:
-            return device.get("id")
+            return device
     return None
 
 

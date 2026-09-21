@@ -356,29 +356,45 @@ def resolve_jam_slot(guild_id: int, store: SlotStore) -> tuple[int, None] | tupl
     return slot_meta.index, None
 
 
-async def do_play(
-    guild_id: int, track: str, mode: str, store: SlotStore, web_api_link_manager: WebApiLinkManager
-) -> tuple[str, bool]:
-    """Returns (content, ephemeral). `mode` is "play_now" or "queue"; used
-    by both the gateway /play command and its SQS-relayed equivalent."""
+async def resolve_play_token(
+    guild_id: int, store: SlotStore, web_api_link_manager: WebApiLinkManager
+) -> tuple[str, None] | tuple[None, tuple[str, bool]]:
+    """Shared by do_search_tracks/do_play_track: resolves the guild's
+    active slot down to a usable Spotify access token, or the error to
+    show the user."""
     slot_index, error = resolve_jam_slot(guild_id, store)
     if error is not None:
-        return error
+        return None, error
     token = await web_api_link_manager.get_access_token(slot_index)
     if token is None:
-        return "Spotify Web API isn't linked for this slot.", True
+        return None, ("Spotify Web API isn't linked for this slot.", True)
+    return token, None
 
-    track_uri = track
-    if not track_uri.startswith("spotify:track:"):
-        # User typed free text and hit enter without picking an
-        # autocomplete suggestion (or autocomplete never ran at all, e.g.
-        # relayed through Lambda -- see interaction_relay.py) -- fall back
-        # to a live search and take the top hit.
-        results = await spotify_player_api.search_tracks(token, track)
-        if not results:
-            return f"No tracks found for '{track}'.", True
-        track_uri = results[0]["uri"]
 
+async def do_search_tracks(
+    guild_id: int, query: str, store: SlotStore, web_api_link_manager: WebApiLinkManager
+) -> tuple[list[dict], None] | tuple[None, tuple[str, bool]]:
+    """Returns (results, None) -- results may be an empty list if Spotify
+    genuinely has no matches -- or (None, error). Used by /play to show up
+    to 5 tracks as a Play/Queue button picker instead of blindly guessing
+    the top hit (autocomplete can't be relied on to have run first, see
+    interaction_relay.py)."""
+    token, error = await resolve_play_token(guild_id, store, web_api_link_manager)
+    if error is not None:
+        return None, error
+    results = await spotify_player_api.search_tracks(token, query)
+    return results[:5], None
+
+
+async def do_play_track(
+    guild_id: int, track_uri: str, mode: str, store: SlotStore, web_api_link_manager: WebApiLinkManager
+) -> tuple[str, bool]:
+    """Returns (content, ephemeral). `mode` is "play_now" or "queue" --
+    called when a specific track's Play/Queue button (from
+    do_search_tracks' results) is clicked."""
+    token, error = await resolve_play_token(guild_id, store, web_api_link_manager)
+    if error is not None:
+        return error
     if mode == "play_now":
         await spotify_player_api.play_uri(token, track_uri)
         return "Playing now.", True

@@ -22,10 +22,19 @@ the bot over SQS, alongside /disconnect, /link-finish, /link-web-api-finish,
 running. The bot long-polls the queue and sends the real response itself
 via Discord's webhook-followup API using the interaction token.
 
-Message component interactions (button clicks -- currently just Jam's
-Rewind/Play/Pause/Skip) are deferred as DEFERRED_UPDATE_MESSAGE instead of
-DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, since the bot's eventual response
-edits the existing message rather than posting a new one.
+The "Paste redirect URL" button on /link and /link-web-api's replies works
+the same way: it's a message component click, but it also needs an
+*immediate* MODAL response (same reasoning as above), so it's answered
+directly here too instead of falling into the generic component handling
+below -- see PASTE_URL_BUTTONS.
+
+Message component interactions (button clicks) are deferred one of two
+ways depending on what the eventual response needs to do: Jam's
+Rewind/Play/Pause/Skip ("jam:<action>") as DEFERRED_UPDATE_MESSAGE, since
+the bot's response edits the existing panel message; everything else
+(currently /play's per-track Play/Queue buttons) as
+DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, since those post a fresh ephemeral
+confirmation and leave the original message alone.
 
 Autocomplete interactions (/play's live search-as-you-type) can't be
 deferred at all -- Discord requires an immediate response -- and this
@@ -72,6 +81,12 @@ DIRECT_COMMANDS = {"wake", "sleep"}
 # module docstring. Everything else that needs the bot running (disconnect,
 # link-finish, delete-slot, and any MODAL_SUBMIT) goes over SQS as before.
 MODAL_COMMANDS = {"connect", "reconnect", "link"}
+# Button custom_ids that need an immediate MODAL response -- see module
+# docstring. Maps the button's custom_id to (modal custom_id, title).
+PASTE_URL_BUTTONS = {
+    "paste:link": ("paste-finish:link", "Finish linking Spotify"),
+    "paste:link-web-api": ("paste-finish:link-web-api", "Finish Web API link"),
+}
 
 
 def _find_instance(ec2) -> tuple[str, str] | tuple[None, None]:
@@ -119,7 +134,9 @@ def _relay(body: dict, response_type: int = RESPONSE_DEFERRED_CHANNEL_MESSAGE_WI
     return _response(200, {"type": response_type})
 
 
-def _password_modal_response(custom_id: str, title: str) -> dict:
+def _text_modal_response(
+    custom_id: str, title: str, field_custom_id: str, label: str, required: bool, max_length: int
+) -> dict:
     return _response(
         200,
         {
@@ -133,17 +150,27 @@ def _password_modal_response(custom_id: str, title: str) -> dict:
                         "components": [
                             {
                                 "type": 4,
-                                "custom_id": "password",
-                                "label": "Password",
+                                "custom_id": field_custom_id,
+                                "label": label,
                                 "style": 1,
-                                "required": True,
-                                "max_length": 100,
+                                "required": required,
+                                "max_length": max_length,
                             }
                         ],
                     }
                 ],
             },
         },
+    )
+
+
+def _password_modal_response(custom_id: str, title: str) -> dict:
+    return _text_modal_response(custom_id, title, "password", "Password", required=True, max_length=100)
+
+
+def _paste_url_modal_response(custom_id: str, title: str) -> dict:
+    return _text_modal_response(
+        custom_id, title, "url", "Redirect URL (blank if the page loaded)", required=False, max_length=500
     )
 
 
@@ -197,9 +224,17 @@ def handler(event, context):
         return _password_modal_response(f"link:{slotname_value}", f"Set a password for '{slotname_value}'")
 
     if interaction_type == TYPE_MESSAGE_COMPONENT:
-        # A button click (e.g. Jam's transport buttons) -- the eventual
-        # response edits the message the button lives on, not a new one.
-        return _relay(body, response_type=RESPONSE_DEFERRED_UPDATE_MESSAGE)
+        custom_id = body["data"]["custom_id"]
+        if custom_id in PASTE_URL_BUTTONS:
+            modal_custom_id, title = PASTE_URL_BUTTONS[custom_id]
+            return _paste_url_modal_response(modal_custom_id, title)
+        if custom_id.startswith("jam:"):
+            # Jam's transport buttons -- the eventual response edits the
+            # message the button lives on, not a new one.
+            return _relay(body, response_type=RESPONSE_DEFERRED_UPDATE_MESSAGE)
+        # Everything else (e.g. /play's per-track Play/Queue buttons) posts
+        # a fresh response instead of editing the message it came from.
+        return _relay(body, response_type=RESPONSE_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE)
 
     # Everything else that reaches here (disconnect, link-finish,
     # link-web-api-finish, delete-slot, jam, play, and every MODAL_SUBMIT)

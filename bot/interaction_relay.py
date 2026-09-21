@@ -14,20 +14,25 @@ command-usage line) instead of being relayed as a plain APPLICATION_COMMAND
 -- what shows up here for those is the modal's *submission*
 (type == MODAL_SUBMIT), with the original slot name folded into the modal's
 custom_id ("connect:<slot>" / "link:<slotname>") since the submission
-payload doesn't carry the original command's other arguments.
+payload doesn't carry the original command's other arguments. The
+"Paste redirect URL" button on /link and /link-web-api's replies works the
+same way: Lambda answers that button click directly with a MODAL
+(custom_id "paste-finish:link" / "paste-finish:link-web-api"), and its
+submission comes back here as another MODAL_SUBMIT.
 
 Message component interactions (type == MESSAGE_COMPONENT, i.e. a button
-click -- currently just Jam's Rewind/Play/Pause/Skip, custom_id
-"jam:<action>") are deferred by Lambda as DEFERRED_UPDATE_MESSAGE, so the
-real response has to EDIT the original message via the webhook API's
-@original endpoint instead of posting a new followup message.
+click) come in two flavors, and Lambda defers them differently (see its
+own module docstring): Jam's Rewind/Play/Pause/Skip ("jam:<action>") as
+DEFERRED_UPDATE_MESSAGE, since the response edits the existing panel
+message; /play's per-track Play/Queue buttons ("play-track:<mode>:<uri>")
+as DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, since the response is a fresh
+ephemeral confirmation that leaves the results message alone (so more than
+one track can be picked from the same results).
 
-Autocomplete (e.g. /play's live search-as-you-type) never reaches here at
-all -- Discord doesn't support deferring an autocomplete response, so
-Lambda answers those directly with an empty choice list (it has no access
-to a slot's cached Spotify token). /play still fully works when relayed;
-it just has no live suggestions while typing, same as if you'd hit enter
-without picking one.
+Autocomplete never reaches here at all -- Discord doesn't support
+deferring an autocomplete response, so Lambda always answers those with an
+empty choice list directly. Not that it matters: /play no longer uses
+autocomplete at all, see main.py's TrackResultsView.
 """
 
 import asyncio
@@ -46,8 +51,9 @@ from commands import (
     do_link_finish,
     do_link_web_api,
     do_link_web_api_finish,
-    do_play,
+    do_play_track,
     do_reconnect,
+    do_search_tracks,
     resolve_jam_slot,
 )
 from config import AWS_REGION, INTERACTIONS_QUEUE_URL
@@ -72,6 +78,51 @@ TYPE_MODAL_SUBMIT = 5
 # that gateway-registered command object (it comes straight from Lambda via
 # SQS), so this is checked again here against the raw interaction payload.
 MANAGE_GUILD_PERMISSION = 0x20
+
+
+def _link_start_components(authorize_url: str, paste_flow: str) -> list[dict]:
+    """One row: a pure Link-style button (Discord opens it client-side, no
+    interaction generated -- safe to send with no live Interaction behind
+    it) plus a "Paste redirect URL" button whose click Lambda answers with
+    a MODAL directly (custom_id "paste-finish:<paste_flow>" once
+    submitted, see this module's docstring)."""
+    return [
+        {
+            "type": 1,
+            "components": [
+                {"type": 2, "style": 5, "label": "Log in with Spotify", "url": authorize_url},
+                {"type": 2, "style": 1, "label": "Paste redirect URL", "custom_id": f"paste:{paste_flow}"},
+            ],
+        }
+    ]
+
+
+def _track_result_components(results: list[dict]) -> list[dict]:
+    """Two tracks per row (Play + Queue buttons each) -- 5 tracks max fits
+    in 3 rows, well under Discord's 5-row cap."""
+    rows = []
+    row = {"type": 1, "components": []}
+    for track in results[:5]:
+        uri = track["uri"]
+        label = track["name"][:60]
+        row["components"].append(
+            {"type": 2, "style": 3, "label": f"▶ {label}"[:80], "custom_id": f"play-track:play_now:{uri}"}
+        )
+        row["components"].append({"type": 2, "style": 2, "label": "➕ Queue", "custom_id": f"play-track:queue:{uri}"})
+        if len(row["components"]) >= 4:
+            rows.append(row)
+            row = {"type": 1, "components": []}
+    if row["components"]:
+        rows.append(row)
+    return rows
+
+
+def _format_track_results(results: list[dict]) -> str:
+    lines = []
+    for i, track in enumerate(results, 1):
+        artists = ", ".join(a["name"] for a in track.get("artists", []))
+        lines.append(f"{i}. **{track['name']}** — {artists}")
+    return "\n".join(lines)
 
 
 class InteractionRelay:
@@ -145,14 +196,14 @@ class InteractionRelay:
                 await self._run_component(interaction, guild)
             else:
                 if member is None:
-                    content, ephemeral, authorize_url = (
+                    content, ephemeral, components = (
                         "Couldn't find you in this server's member cache — try again in a moment.",
                         True,
                         None,
                     )
                 else:
-                    content, ephemeral, authorize_url = await self._run_command(interaction, guild, member)
-                await self._followup(interaction, content, ephemeral, authorize_url=authorize_url)
+                    content, ephemeral, components = await self._run_command(interaction, guild, member)
+                await self._followup(interaction, content, ephemeral, components=components)
         except Exception:
             log.exception("failed to process relayed interaction")
         finally:
@@ -164,11 +215,10 @@ class InteractionRelay:
 
     async def _run_command(
         self, interaction: dict, guild: discord.Guild, member: discord.Member
-    ) -> tuple[str, bool, str | None]:
-        """Returns (content, ephemeral, authorize_url) -- authorize_url is
-        only ever non-None for link-web-api/link's modal-submit, so
-        _followup can attach a Log-in-with-Spotify button alongside the
-        text (those two are the only replies here that need one)."""
+    ) -> tuple[str, bool, list[dict] | None]:
+        """Returns (content, ephemeral, components) -- components is only
+        ever non-None for link-web-api/link's modal-submit (the login+paste
+        buttons) and /play (the per-track Play/Queue buttons)."""
         if interaction.get("type") == TYPE_MODAL_SUBMIT:
             return await self._run_modal_submit(interaction, guild, member)
 
@@ -184,7 +234,8 @@ class InteractionRelay:
             content, ephemeral = await do_link_web_api(
                 str(member_id), options.get("slotname", ""), self.store, self.web_api_link_manager
             )
-            return content, ephemeral, self.web_api_link_manager.authorize_url(str(member_id))
+            url = self.web_api_link_manager.authorize_url(str(member_id))
+            return content, ephemeral, _link_start_components(url, "link-web-api") if url else None
         elif command_name == "link-web-api-finish":
             content, ephemeral = await do_link_web_api_finish(
                 str(member_id), options.get("url", ""), self.web_api_link_manager
@@ -198,12 +249,19 @@ class InteractionRelay:
         elif command_name == "jam":
             content, ephemeral = await self._run_jam(interaction, guild)
         elif command_name == "play":
-            content, ephemeral = await do_play(
-                guild.id, options.get("track", ""), options.get("mode", "queue"), self.store, self.web_api_link_manager
-            )
+            return await self._run_play(guild, options.get("query", ""))
         else:
             content, ephemeral = f"Unknown command: {command_name}", True
         return content, ephemeral, None
+
+    async def _run_play(self, guild: discord.Guild, query: str) -> tuple[str, bool, list[dict] | None]:
+        results, error = await do_search_tracks(guild.id, query, self.store, self.web_api_link_manager)
+        if error is not None:
+            content, ephemeral = error
+            return content, ephemeral, None
+        if not results:
+            return f"No tracks found for '{query}'.", True, None
+        return _format_track_results(results), True, _track_result_components(results)
 
     async def _run_jam(self, interaction: dict, guild: discord.Guild) -> tuple[str, bool]:
         slot_index, error = resolve_jam_slot(guild.id, self.store)
@@ -216,7 +274,7 @@ class InteractionRelay:
 
     async def _run_modal_submit(
         self, interaction: dict, guild: discord.Guild, member: discord.Member
-    ) -> tuple[str, bool, str | None]:
+    ) -> tuple[str, bool, list[dict] | None]:
         custom_id = interaction["data"]["custom_id"]
         command_name, _, argument = custom_id.partition(":")
 
@@ -237,51 +295,53 @@ class InteractionRelay:
             )
         elif command_name == "link":
             content, ephemeral = await do_link(str(member.id), argument, password, self.link_manager)
-            return content, ephemeral, self.link_manager.authorize_url(str(member.id))
+            url = self.link_manager.authorize_url(str(member.id))
+            return content, ephemeral, _link_start_components(url, "link") if url else None
+        elif command_name == "paste-finish":
+            pasted_url = fields.get("url", "").strip() or None
+            if argument == "link":
+                content, ephemeral = await do_link_finish(str(member.id), pasted_url, self.link_manager)
+            else:
+                content, ephemeral = await do_link_web_api_finish(
+                    str(member.id), pasted_url or "", self.web_api_link_manager
+                )
         else:
             content, ephemeral = f"Unknown modal submission: {custom_id}", True
         return content, ephemeral, None
 
     async def _run_component(self, interaction: dict, guild: discord.Guild) -> None:
         """Handles a relayed button click. Unlike _run_command, this sends
-        its own response (an edit to the original message) rather than
-        returning (content, ephemeral) for _followup to post as a new
-        message -- Lambda deferred this as DEFERRED_UPDATE_MESSAGE, which
-        Discord expects to be resolved by editing the message in place."""
+        its own response rather than returning (content, ephemeral) for
+        _followup to post -- jam's buttons edit the original message
+        (Lambda deferred those as DEFERRED_UPDATE_MESSAGE); play-track's
+        buttons post a fresh ephemeral confirmation instead."""
         custom_id = interaction["data"]["custom_id"]
-        prefix, _, action = custom_id.partition(":")
-        if prefix != "jam":
-            log.warning("unknown component custom_id: %s", custom_id)
+        if custom_id.startswith("jam:"):
+            action = custom_id.split(":", 1)[1]
+            slot_index = self.jam_manager.session_slot_index(guild.id)
+            if slot_index is None:
+                return  # panel's session already ended -- nothing to update
+            await self.jam_manager.apply_action(slot_index, action)
+            embed = await self.jam_manager.build_embed(slot_index)
+            await self._edit_original(interaction, embed)
             return
-        slot_index = self.jam_manager.session_slot_index(guild.id)
-        if slot_index is None:
-            return  # panel's session already ended -- nothing to update
-        await self.jam_manager.apply_action(slot_index, action)
-        embed = await self.jam_manager.build_embed(slot_index)
-        await self._edit_original(interaction, embed)
+        if custom_id.startswith("play-track:"):
+            _, mode, track_uri = custom_id.split(":", 2)
+            content, ephemeral = await do_play_track(guild.id, track_uri, mode, self.store, self.web_api_link_manager)
+            await self._followup(interaction, content, ephemeral)
+            return
+        log.warning("unknown component custom_id: %s", custom_id)
 
     async def _followup(
-        self, interaction: dict, content: str, ephemeral: bool, authorize_url: str | None = None
+        self, interaction: dict, content: str, ephemeral: bool, components: list[dict] | None = None
     ) -> None:
         application_id = interaction["application_id"]
         token = interaction["token"]
         payload = {"content": content}
         if ephemeral:
             payload["flags"] = EPHEMERAL
-        if authorize_url:
-            # A pure link-style button: Discord opens it client-side with
-            # no interaction generated, so it's safe to send from here even
-            # though there's no live Interaction to answer a click through
-            # (unlike LinkStartView's paste-back button in main.py, which
-            # this relay path deliberately omits -- see its docstring).
-            payload["components"] = [
-                {
-                    "type": 1,
-                    "components": [
-                        {"type": 2, "style": 5, "label": "Log in with Spotify", "url": authorize_url}
-                    ],
-                }
-            ]
+        if components:
+            payload["components"] = components
         url = f"{DISCORD_API}/webhooks/{application_id}/{token}"
         async with self._http.post(url, json=payload) as resp:
             if resp.status >= 300:

@@ -1,10 +1,8 @@
-import asyncio
 import logging
 
 import discord
 from discord import app_commands
 
-import spotify_player_api
 from api import DiagnosticsApi
 from commands import (
     do_connect,
@@ -14,8 +12,9 @@ from commands import (
     do_link_finish,
     do_link_web_api,
     do_link_web_api_finish,
-    do_play,
+    do_play_track,
     do_reconnect,
+    do_search_tracks,
     forget_session,
     resolve_jam_slot,
 )
@@ -187,44 +186,62 @@ async def jam(interaction: discord.Interaction):
     await interaction.response.send_message("Jam panel posted above.", ephemeral=True)
 
 
-async def _play_track_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
-    # Gateway-only -- never called when relayed through Lambda, since
-    # Discord doesn't support deferring an autocomplete response and
-    # Lambda has no access to a slot's cached Spotify token (it answers
-    # these with an empty list directly, see lambda/wake_sleep.py).
-    if len(current) < 2 or interaction.guild is None:
-        return []
-    slot_index, error = resolve_jam_slot(interaction.guild.id, slot_store)
-    if error is not None:
-        return []
-    token = await web_api_link_manager.get_access_token(slot_index)
-    if token is None:
-        return []
-    try:
-        tracks = await asyncio.wait_for(spotify_player_api.search_tracks(token, current), timeout=2.5)
-    except Exception:
-        return []
-    choices = []
-    for track in tracks[:25]:
+def _format_track_results(results: list[dict]) -> str:
+    lines = []
+    for i, track in enumerate(results, 1):
         artists = ", ".join(a["name"] for a in track.get("artists", []))
-        choices.append(app_commands.Choice(name=f"{track['name']} — {artists}"[:100], value=track["uri"]))
-    return choices
+        lines.append(f"{i}. **{track['name']}** — {artists}")
+    return "\n".join(lines)
 
 
-@tree.command(name="play", description="Search Spotify and play or queue a track")
-@app_commands.describe(track="Start typing a song name and pick a suggestion", mode="Play it now or add it to the queue")
-@app_commands.autocomplete(track=_play_track_autocomplete)
-@app_commands.choices(
-    mode=[
-        app_commands.Choice(name="Add to queue", value="queue"),
-        app_commands.Choice(name="Play now", value="play_now"),
-    ]
-)
-async def play(interaction: discord.Interaction, track: str, mode: app_commands.Choice[str]):
+class TrackResultsView(discord.ui.View):
+    """Up to 5 tracks, each with its own Play-now/Queue buttons -- replaces
+    the old autocomplete-and-guess-the-top-hit design (autocomplete can't
+    be relied on to have even run, see interaction_relay.py's module
+    docstring). Explicit "play-track:<mode>:<uri>" custom_ids so a relayed
+    click can be dispatched the same way (interaction_relay.py's
+    _run_component)."""
+
+    def __init__(self, guild_id: int, results: list[dict]):
+        super().__init__(timeout=120)
+        for track in results[:5]:
+            uri = track["uri"]
+            label = track["name"][:60]
+            play_button = discord.ui.Button(
+                label=f"▶ {label}", style=discord.ButtonStyle.success, custom_id=f"play-track:play_now:{uri}"
+            )
+            play_button.callback = self._make_callback(guild_id, uri, "play_now")
+            queue_button = discord.ui.Button(
+                label="➕ Queue", style=discord.ButtonStyle.secondary, custom_id=f"play-track:queue:{uri}"
+            )
+            queue_button.callback = self._make_callback(guild_id, uri, "queue")
+            self.add_item(play_button)
+            self.add_item(queue_button)
+
+    def _make_callback(self, guild_id: int, track_uri: str, mode: str):
+        async def callback(interaction: discord.Interaction) -> None:
+            content, ephemeral = await do_play_track(guild_id, track_uri, mode, slot_store, web_api_link_manager)
+            await interaction.response.send_message(content, ephemeral=ephemeral)
+
+        return callback
+
+
+@tree.command(name="play", description="Search Spotify for a track to play or queue")
+@app_commands.describe(query="Song name to search for")
+async def play(interaction: discord.Interaction, query: str):
     assert interaction.guild is not None
     await interaction.response.defer(ephemeral=True)
-    content, ephemeral = await do_play(interaction.guild.id, track, mode.value, slot_store, web_api_link_manager)
-    await interaction.followup.send(content, ephemeral=ephemeral)
+    results, error = await do_search_tracks(interaction.guild.id, query, slot_store, web_api_link_manager)
+    if error is not None:
+        content, ephemeral = error
+        await interaction.followup.send(content, ephemeral=ephemeral)
+        return
+    if not results:
+        await interaction.followup.send(f"No tracks found for '{query}'.", ephemeral=True)
+        return
+    await interaction.followup.send(
+        _format_track_results(results), view=TrackResultsView(interaction.guild.id, results), ephemeral=True
+    )
 
 
 @tree.command(name="link", description="Claim a free Spotify slot and link your own Spotify account")

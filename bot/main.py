@@ -14,9 +14,10 @@ from commands import (
     do_link_finish,
     do_link_web_api,
     do_link_web_api_finish,
+    do_play,
     do_reconnect,
     forget_session,
-    get_active_slot_name,
+    resolve_jam_slot,
 )
 from config import DEV_GUILD_ID, DISCORD_TOKEN, HOST_CONTROLLER, INTERACTIONS_QUEUE_URL, SLOTS
 from host_control import build_host_controller
@@ -43,13 +44,15 @@ link_manager = LinkManager(slot_store, librespot)
 web_api_link_manager = WebApiLinkManager(slot_store)
 host_controller = build_host_controller(HOST_CONTROLLER)
 idle_monitor = IdleMonitor(client, slot_store, host_controller)
+diagnostics_api = DiagnosticsApi(client, librespot, slot_store, link_manager, web_api_link_manager)
+jam_manager = JamManager(slot_store, web_api_link_manager)
 # None when no Lambda/SQS relay is configured -- the gateway CommandTree
 # below is then the one and only command path (self-host/standalone default).
 interaction_relay = (
-    InteractionRelay(client, librespot, slot_store, link_manager) if INTERACTIONS_QUEUE_URL else None
+    InteractionRelay(client, librespot, slot_store, link_manager, web_api_link_manager, jam_manager)
+    if INTERACTIONS_QUEUE_URL
+    else None
 )
-diagnostics_api = DiagnosticsApi(client, librespot, slot_store, link_manager, web_api_link_manager)
-jam_manager = JamManager(slot_store, web_api_link_manager)
 
 
 class PasswordModal(discord.ui.Modal):
@@ -93,20 +96,35 @@ class PasteUrlModal(discord.ui.Modal):
 class LinkStartView(discord.ui.View):
     """Posted alongside a /link or /link-web-api reply: a Link-style button
     opens Spotify's login directly in a new tab (no copy/paste for step
-    one), and a second button pops a paste-back dialog for step two. The
-    older /link-finish and /link-web-api-finish commands still work too,
-    as a fallback for anyone who'd rather type."""
+    one), and a second button pops a paste-back dialog for step two.
 
-    def __init__(self, authorize_url: str, modal_title: str, on_finish_callback):
+    The paste-back button needs a live Interaction to answer immediately
+    with a MODAL -- only possible when this process itself receives
+    interactions (no Lambda/SQS relay in the way, see
+    interaction_relay.py's module docstring). Under the relay there's no
+    way to answer a fresh button click with a modal from here, so it's
+    swapped for a disabled hint instead; the plain fallback_command still
+    works either way (interaction_relay.py handles it directly)."""
+
+    def __init__(self, authorize_url: str, modal_title: str, on_finish_callback, fallback_command: str):
         super().__init__(timeout=900)
         self.add_item(
             discord.ui.Button(label="Log in with Spotify", style=discord.ButtonStyle.link, url=authorize_url)
         )
-        self._modal_title = modal_title
-        self._on_finish_callback = on_finish_callback
+        if INTERACTIONS_QUEUE_URL:
+            self.add_item(
+                discord.ui.Button(
+                    label=f"Use {fallback_command} to finish", style=discord.ButtonStyle.secondary, disabled=True
+                )
+            )
+        else:
+            self._modal_title = modal_title
+            self._on_finish_callback = on_finish_callback
+            paste_button = discord.ui.Button(label="Paste redirect URL", style=discord.ButtonStyle.primary)
+            paste_button.callback = self._on_paste_click
+            self.add_item(paste_button)
 
-    @discord.ui.button(label="Paste redirect URL", style=discord.ButtonStyle.primary)
-    async def paste(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+    async def _on_paste_click(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(PasteUrlModal(self._modal_title, self._on_finish_callback))
 
 
@@ -160,29 +178,26 @@ async def disconnect(interaction: discord.Interaction):
 @tree.command(name="jam", description="Post a live now-playing/queue control panel in this channel")
 async def jam(interaction: discord.Interaction):
     assert interaction.guild is not None
-    slot_name = get_active_slot_name(interaction.guild.id)
-    if slot_name is None:
-        await interaction.response.send_message("Connect a slot first with /connect.", ephemeral=True)
+    slot_index, error = resolve_jam_slot(interaction.guild.id, slot_store)
+    if error is not None:
+        content, ephemeral = error
+        await interaction.response.send_message(content, ephemeral=ephemeral)
         return
-    slot_meta = slot_store.get_by_name(slot_name)
-    if slot_meta is None or slot_meta.web_api_refresh_token is None:
-        await interaction.response.send_message(
-            f"Slot '{slot_name}' isn't linked for Spotify Web API yet -- run /link-web-api first.", ephemeral=True
-        )
-        return
-    await jam_manager.start_jam(interaction, slot_meta.index)
+    await jam_manager.start_jam_in_channel(interaction.channel, slot_index)
+    await interaction.response.send_message("Jam panel posted above.", ephemeral=True)
 
 
 async def _play_track_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    # Gateway-only -- never called when relayed through Lambda, since
+    # Discord doesn't support deferring an autocomplete response and
+    # Lambda has no access to a slot's cached Spotify token (it answers
+    # these with an empty list directly, see lambda/wake_sleep.py).
     if len(current) < 2 or interaction.guild is None:
         return []
-    slot_name = get_active_slot_name(interaction.guild.id)
-    if slot_name is None:
+    slot_index, error = resolve_jam_slot(interaction.guild.id, slot_store)
+    if error is not None:
         return []
-    slot_meta = slot_store.get_by_name(slot_name)
-    if slot_meta is None or slot_meta.web_api_refresh_token is None:
-        return []
-    token = await web_api_link_manager.get_access_token(slot_meta.index)
+    token = await web_api_link_manager.get_access_token(slot_index)
     if token is None:
         return []
     try:
@@ -207,35 +222,9 @@ async def _play_track_autocomplete(interaction: discord.Interaction, current: st
 )
 async def play(interaction: discord.Interaction, track: str, mode: app_commands.Choice[str]):
     assert interaction.guild is not None
-    slot_name = get_active_slot_name(interaction.guild.id)
-    if slot_name is None:
-        await interaction.response.send_message("Connect a slot first with /connect.", ephemeral=True)
-        return
-    slot_meta = slot_store.get_by_name(slot_name)
-    token = await web_api_link_manager.get_access_token(slot_meta.index) if slot_meta else None
-    if token is None:
-        await interaction.response.send_message(
-            f"Slot '{slot_name}' isn't linked for Spotify Web API yet -- run /link-web-api first.", ephemeral=True
-        )
-        return
-
     await interaction.response.defer(ephemeral=True)
-    track_uri = track
-    if not track_uri.startswith("spotify:track:"):
-        # User typed free text and hit enter without picking a suggestion --
-        # Discord doesn't enforce choosing from autocomplete results.
-        results = await spotify_player_api.search_tracks(token, track)
-        if not results:
-            await interaction.followup.send(f"No tracks found for '{track}'.", ephemeral=True)
-            return
-        track_uri = results[0]["uri"]
-
-    if mode.value == "play_now":
-        await spotify_player_api.play_uri(token, track_uri)
-        await interaction.followup.send("Playing now.", ephemeral=True)
-    else:
-        await spotify_player_api.add_to_queue(token, track_uri)
-        await interaction.followup.send("Added to queue.", ephemeral=True)
+    content, ephemeral = await do_play(interaction.guild.id, track, mode.value, slot_store, web_api_link_manager)
+    await interaction.followup.send(content, ephemeral=ephemeral)
 
 
 @tree.command(name="link", description="Claim a free Spotify slot and link your own Spotify account")
@@ -253,7 +242,7 @@ async def link(interaction: discord.Interaction, slotname: str):
         content, ephemeral = await do_link(user_id, slotname, password, link_manager)
         authorize_url = link_manager.authorize_url(user_id)
         if authorize_url:
-            view = LinkStartView(authorize_url, f"Finish linking '{slotname}'", handle_finish)
+            view = LinkStartView(authorize_url, f"Finish linking '{slotname}'", handle_finish, "/link-finish")
             await modal_interaction.followup.send(content, view=view, ephemeral=ephemeral)
         else:
             await modal_interaction.followup.send(content, ephemeral=ephemeral)
@@ -290,7 +279,9 @@ async def link_web_api(interaction: discord.Interaction, slotname: str):
             content2, ephemeral2 = await do_link_web_api_finish(user_id, pasted_url or "", web_api_link_manager)
             await modal_interaction.followup.send(content2, ephemeral=ephemeral2)
 
-        view = LinkStartView(authorize_url, f"Finish Web API link for '{slotname}'", handle_finish)
+        view = LinkStartView(
+            authorize_url, f"Finish Web API link for '{slotname}'", handle_finish, "/link-web-api-finish"
+        )
         await interaction.response.send_message(content, view=view, ephemeral=ephemeral)
     else:
         await interaction.response.send_message(content, ephemeral=ephemeral)

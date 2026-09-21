@@ -17,10 +17,21 @@ the slash command (Discord doesn't support deferring and showing a modal
 later), so those two are answered here with a MODAL response instead of
 being relayed. The modal's *submission* comes back to this same endpoint as
 a separate MODAL_SUBMIT interaction -- that's what actually gets relayed to
-the bot over SQS, alongside /disconnect, /link-finish and /delete-slot,
-which only make sense while the bot is running. The bot long-polls the
-queue and sends the real response itself via Discord's webhook-followup API
-using the interaction token.
+the bot over SQS, alongside /disconnect, /link-finish, /link-web-api-finish,
+/delete-slot, /jam and /play, which only make sense while the bot is
+running. The bot long-polls the queue and sends the real response itself
+via Discord's webhook-followup API using the interaction token.
+
+Message component interactions (button clicks -- currently just Jam's
+Rewind/Play/Pause/Skip) are deferred as DEFERRED_UPDATE_MESSAGE instead of
+DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, since the bot's eventual response
+edits the existing message rather than posting a new one.
+
+Autocomplete interactions (/play's live search-as-you-type) can't be
+deferred at all -- Discord requires an immediate response -- and this
+function has no access to a slot's cached Spotify token to do a real
+search, so these are always answered with an empty choice list. /play
+still works when relayed; it just has no live suggestions while typing.
 
 Discord requires responding to the PING verification handshake and to every
 interaction within 3 seconds with a valid Ed25519-signed response.
@@ -43,13 +54,17 @@ _verify_key = VerifyKey(bytes.fromhex(DISCORD_PUBLIC_KEY))
 # Discord interaction types (the incoming request).
 TYPE_PING = 1
 TYPE_APPLICATION_COMMAND = 2
+TYPE_MESSAGE_COMPONENT = 3
+TYPE_APPLICATION_COMMAND_AUTOCOMPLETE = 4
 TYPE_MODAL_SUBMIT = 5
 
 # Discord interaction response types (what we send back).
 RESPONSE_PONG = 1
 RESPONSE_CHANNEL_MESSAGE_WITH_SOURCE = 4
 RESPONSE_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE = 5
+RESPONSE_DEFERRED_UPDATE_MESSAGE = 6
 RESPONSE_MODAL = 9
+RESPONSE_AUTOCOMPLETE_RESULT = 8
 
 EPHEMERAL = 64
 DIRECT_COMMANDS = {"wake", "sleep"}
@@ -98,10 +113,10 @@ def _message_response(content: str, ephemeral: bool = False) -> dict:
     return _response(200, {"type": RESPONSE_CHANNEL_MESSAGE_WITH_SOURCE, "data": data})
 
 
-def _relay(body: dict) -> dict:
+def _relay(body: dict, response_type: int = RESPONSE_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE) -> dict:
     sqs = boto3.client("sqs", region_name=AWS_REGION)
     sqs.send_message(QueueUrl=INTERACTIONS_QUEUE_URL, MessageBody=json.dumps(body))
-    return _response(200, {"type": RESPONSE_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE})
+    return _response(200, {"type": response_type})
 
 
 def _password_modal_response(custom_id: str, title: str) -> dict:
@@ -142,7 +157,12 @@ def handler(event, context):
     if interaction_type == TYPE_PING:
         return _response(200, {"type": RESPONSE_PONG})
 
-    if interaction_type not in (TYPE_APPLICATION_COMMAND, TYPE_MODAL_SUBMIT):
+    if interaction_type == TYPE_APPLICATION_COMMAND_AUTOCOMPLETE:
+        # No EC2/instance lookup needed -- answer instantly, before that
+        # budget gets eaten by an AWS API call on every keystroke.
+        return _response(200, {"type": RESPONSE_AUTOCOMPLETE_RESULT, "data": {"choices": []}})
+
+    if interaction_type not in (TYPE_APPLICATION_COMMAND, TYPE_MODAL_SUBMIT, TYPE_MESSAGE_COMPONENT):
         return _response(400, {"error": "unhandled interaction type"})
 
     command_name = body["data"]["name"] if interaction_type == TYPE_APPLICATION_COMMAND else None
@@ -176,7 +196,13 @@ def handler(event, context):
         slotname_value = options.get("slotname", "")
         return _password_modal_response(f"link:{slotname_value}", f"Set a password for '{slotname_value}'")
 
-    # Everything else that reaches here (disconnect, link-finish, delete-slot,
-    # and every MODAL_SUBMIT) needs the bot process itself -- relay it and let
-    # the bot reply via the interaction-followup webhook once it's done.
+    if interaction_type == TYPE_MESSAGE_COMPONENT:
+        # A button click (e.g. Jam's transport buttons) -- the eventual
+        # response edits the message the button lives on, not a new one.
+        return _relay(body, response_type=RESPONSE_DEFERRED_UPDATE_MESSAGE)
+
+    # Everything else that reaches here (disconnect, link-finish,
+    # link-web-api-finish, delete-slot, jam, play, and every MODAL_SUBMIT)
+    # needs the bot process itself -- relay it and let the bot reply via
+    # the interaction-followup webhook once it's done.
     return _relay(body)

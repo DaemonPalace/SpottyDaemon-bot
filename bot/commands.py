@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 
 import discord
 
+import spotify_player_api
 from config import SpotifySlot
 from librespot_manager import LibrespotManager
 from slot_store import STATE_CLAIMED, SlotStore
@@ -339,6 +340,50 @@ def get_active_slot_name(guild_id: int) -> str | None:
     /jam and /play to find the Spotify account they should act on."""
     session = _active_sessions.get(guild_id)
     return session.slot_name if session is not None else None
+
+
+def resolve_jam_slot(guild_id: int, store: SlotStore) -> tuple[int, None] | tuple[None, tuple[str, bool]]:
+    """Shared precondition check for /jam and /play: the guild needs an
+    active /connect session, and that slot needs to be Web-API-linked.
+    Returns (slot_index, None) on success or (None, error) where error is
+    the (content, ephemeral) tuple to return to the user."""
+    slot_name = get_active_slot_name(guild_id)
+    if slot_name is None:
+        return None, ("Connect a slot first with /connect.", True)
+    slot_meta = store.get_by_name(slot_name)
+    if slot_meta is None or slot_meta.web_api_refresh_token is None:
+        return None, (f"Slot '{slot_name}' isn't linked for Spotify Web API yet -- run /link-web-api first.", True)
+    return slot_meta.index, None
+
+
+async def do_play(
+    guild_id: int, track: str, mode: str, store: SlotStore, web_api_link_manager: WebApiLinkManager
+) -> tuple[str, bool]:
+    """Returns (content, ephemeral). `mode` is "play_now" or "queue"; used
+    by both the gateway /play command and its SQS-relayed equivalent."""
+    slot_index, error = resolve_jam_slot(guild_id, store)
+    if error is not None:
+        return error
+    token = await web_api_link_manager.get_access_token(slot_index)
+    if token is None:
+        return "Spotify Web API isn't linked for this slot.", True
+
+    track_uri = track
+    if not track_uri.startswith("spotify:track:"):
+        # User typed free text and hit enter without picking an
+        # autocomplete suggestion (or autocomplete never ran at all, e.g.
+        # relayed through Lambda -- see interaction_relay.py) -- fall back
+        # to a live search and take the top hit.
+        results = await spotify_player_api.search_tracks(token, track)
+        if not results:
+            return f"No tracks found for '{track}'.", True
+        track_uri = results[0]["uri"]
+
+    if mode == "play_now":
+        await spotify_player_api.play_uri(token, track_uri)
+        return "Playing now.", True
+    await spotify_player_api.add_to_queue(token, track_uri)
+    return "Added to queue.", True
 
 
 def active_sessions_snapshot() -> list[dict]:

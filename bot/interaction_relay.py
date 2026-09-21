@@ -15,6 +15,19 @@ command-usage line) instead of being relayed as a plain APPLICATION_COMMAND
 (type == MODAL_SUBMIT), with the original slot name folded into the modal's
 custom_id ("connect:<slot>" / "link:<slotname>") since the submission
 payload doesn't carry the original command's other arguments.
+
+Message component interactions (type == MESSAGE_COMPONENT, i.e. a button
+click -- currently just Jam's Rewind/Play/Pause/Skip, custom_id
+"jam:<action>") are deferred by Lambda as DEFERRED_UPDATE_MESSAGE, so the
+real response has to EDIT the original message via the webhook API's
+@original endpoint instead of posting a new followup message.
+
+Autocomplete (e.g. /play's live search-as-you-type) never reaches here at
+all -- Discord doesn't support deferring an autocomplete response, so
+Lambda answers those directly with an empty choice list (it has no access
+to a slot's cached Spotify token). /play still fully works when relayed;
+it just has no live suggestions while typing, same as if you'd hit enter
+without picking one.
 """
 
 import asyncio
@@ -25,11 +38,23 @@ import aiohttp
 import boto3
 import discord
 
-from commands import do_connect, do_delete_slot, do_disconnect, do_link, do_link_finish, do_reconnect
+from commands import (
+    do_connect,
+    do_delete_slot,
+    do_disconnect,
+    do_link,
+    do_link_finish,
+    do_link_web_api_finish,
+    do_play,
+    do_reconnect,
+    resolve_jam_slot,
+)
 from config import INTERACTIONS_QUEUE_URL
+from jam import JamManager
 from librespot_manager import LibrespotManager
 from slot_store import SlotStore
 from spotify_link import LinkManager
+from spotify_web_api import WebApiLinkManager
 
 log = logging.getLogger("interaction_relay")
 
@@ -37,6 +62,7 @@ DISCORD_API = "https://discord.com/api/v10"
 EPHEMERAL = 64
 
 TYPE_APPLICATION_COMMAND = 2
+TYPE_MESSAGE_COMPONENT = 3
 TYPE_MODAL_SUBMIT = 5
 
 # Discord permission bit for "Manage Server", used as a defense-in-depth
@@ -54,11 +80,15 @@ class InteractionRelay:
         librespot: LibrespotManager,
         store: SlotStore,
         link_manager: LinkManager,
+        web_api_link_manager: WebApiLinkManager,
+        jam_manager: JamManager,
     ):
         self.client = client
         self.librespot = librespot
         self.store = store
         self.link_manager = link_manager
+        self.web_api_link_manager = web_api_link_manager
+        self.jam_manager = jam_manager
         self._sqs = None
         self._task: asyncio.Task | None = None
         self._http: aiohttp.ClientSession | None = None
@@ -89,12 +119,29 @@ class InteractionRelay:
         finally:
             await self._http.close()
 
+    def _resolve_guild_member(self, interaction: dict) -> tuple[discord.Guild, discord.Member] | tuple[None, None]:
+        guild = self.client.get_guild(int(interaction["guild_id"]))
+        if guild is None:
+            return None, None
+        member_id = int(interaction["member"]["user"]["id"])
+        member = guild.get_member(member_id)
+        return guild, member
+
     async def _handle(self, message: dict) -> None:
         receipt_handle = message["ReceiptHandle"]
         try:
             interaction = json.loads(message["Body"])
-            content, ephemeral = await self._run_command(interaction)
-            await self._followup(interaction, content, ephemeral)
+            guild, member = self._resolve_guild_member(interaction)
+            if guild is None:
+                pass  # nothing sane to reply with -- drop it
+            elif interaction.get("type") == TYPE_MESSAGE_COMPONENT:
+                await self._run_component(interaction, guild)
+            else:
+                if member is None:
+                    content, ephemeral = "Couldn't find you in this server's member cache — try again in a moment.", True
+                else:
+                    content, ephemeral = await self._run_command(interaction, guild, member)
+                await self._followup(interaction, content, ephemeral)
         except Exception:
             log.exception("failed to process relayed interaction")
         finally:
@@ -104,33 +151,39 @@ class InteractionRelay:
                 ReceiptHandle=receipt_handle,
             )
 
-    async def _run_command(self, interaction: dict) -> tuple[str, bool]:
-        guild_id = int(interaction["guild_id"])
-        guild = self.client.get_guild(guild_id)
-        if guild is None:
-            return "Bot isn't in that server (anymore?).", True
-
-        member_id = int(interaction["member"]["user"]["id"])
-        member = guild.get_member(member_id)
-        if member is None:
-            return "Couldn't find you in this server's member cache — try again in a moment.", True
-
+    async def _run_command(self, interaction: dict, guild: discord.Guild, member: discord.Member) -> tuple[str, bool]:
         if interaction.get("type") == TYPE_MODAL_SUBMIT:
             return await self._run_modal_submit(interaction, guild, member)
 
         command_name = interaction["data"]["name"]
         options = {opt["name"]: opt["value"] for opt in interaction["data"].get("options", [])}
+        member_id = member.id
 
         if command_name == "disconnect":
             return await do_disconnect(guild)
         if command_name == "link-finish":
             return await do_link_finish(str(member_id), options.get("url"), self.link_manager)
+        if command_name == "link-web-api-finish":
+            return await do_link_web_api_finish(str(member_id), options.get("url", ""), self.web_api_link_manager)
         if command_name == "delete-slot":
             permissions = int(interaction["member"].get("permissions", "0"))
             if not permissions & MANAGE_GUILD_PERMISSION:
                 return "You need the Manage Server permission to do that.", True
             return await do_delete_slot(options["name"], self.store, self.librespot)
+        if command_name == "jam":
+            return await self._run_jam(interaction, guild)
+        if command_name == "play":
+            return await do_play(guild.id, options.get("track", ""), options.get("mode", "queue"), self.store, self.web_api_link_manager)
         return f"Unknown command: {command_name}", True
+
+    async def _run_jam(self, interaction: dict, guild: discord.Guild) -> tuple[str, bool]:
+        slot_index, error = resolve_jam_slot(guild.id, self.store)
+        if error is not None:
+            return error
+        channel_id = int(interaction["channel_id"])
+        channel = self.client.get_channel(channel_id) or await self.client.fetch_channel(channel_id)
+        await self.jam_manager.start_jam_in_channel(channel, slot_index)
+        return "Jam panel posted above.", True
 
     async def _run_modal_submit(
         self, interaction: dict, guild: discord.Guild, member: discord.Member
@@ -157,6 +210,24 @@ class InteractionRelay:
             return await do_link(str(member.id), argument, password, self.link_manager)
         return f"Unknown modal submission: {custom_id}", True
 
+    async def _run_component(self, interaction: dict, guild: discord.Guild) -> None:
+        """Handles a relayed button click. Unlike _run_command, this sends
+        its own response (an edit to the original message) rather than
+        returning (content, ephemeral) for _followup to post as a new
+        message -- Lambda deferred this as DEFERRED_UPDATE_MESSAGE, which
+        Discord expects to be resolved by editing the message in place."""
+        custom_id = interaction["data"]["custom_id"]
+        prefix, _, action = custom_id.partition(":")
+        if prefix != "jam":
+            log.warning("unknown component custom_id: %s", custom_id)
+            return
+        slot_index = self.jam_manager.session_slot_index(guild.id)
+        if slot_index is None:
+            return  # panel's session already ended -- nothing to update
+        await self.jam_manager.apply_action(slot_index, action)
+        embed = await self.jam_manager.build_embed(slot_index)
+        await self._edit_original(interaction, embed)
+
     async def _followup(self, interaction: dict, content: str, ephemeral: bool) -> None:
         application_id = interaction["application_id"]
         token = interaction["token"]
@@ -167,3 +238,11 @@ class InteractionRelay:
         async with self._http.post(url, json=payload) as resp:
             if resp.status >= 300:
                 log.error("followup send failed (%s): %s", resp.status, await resp.text())
+
+    async def _edit_original(self, interaction: dict, embed: discord.Embed) -> None:
+        application_id = interaction["application_id"]
+        token = interaction["token"]
+        url = f"{DISCORD_API}/webhooks/{application_id}/{token}/messages/@original"
+        async with self._http.patch(url, json={"embeds": [embed.to_dict()]}) as resp:
+            if resp.status >= 300:
+                log.error("edit-original failed (%s): %s", resp.status, await resp.text())

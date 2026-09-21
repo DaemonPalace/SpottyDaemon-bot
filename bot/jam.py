@@ -5,7 +5,15 @@ whichever channel /jam was run in. Replaces the old web Jam link.
 One session per guild, mirroring commands.py's _active_sessions model.
 Editing the message every REFRESH_INTERVAL_SECONDS is well under Discord's
 per-channel edit rate limit even with several guilds running Jam at once.
-"""
+
+Posting/editing the panel only ever uses plain bot-token REST calls
+(channel.send / message.edit) rather than an Interaction response, so the
+same code works whether /jam was invoked over the gateway or relayed
+through Lambda+SQS (see interaction_relay.py) -- start_jam_in_channel takes
+a channel, not an Interaction. The one place gateway vs. relay differ is
+how a button click's own response gets sent back (handle_button uses a
+live Interaction; interaction_relay.py's _run_component calls apply_action
++ build_embed directly and edits the original message itself)."""
 
 import asyncio
 import logging
@@ -35,7 +43,14 @@ class JamManager:
         self.web_api_link_manager = web_api_link_manager
         self._sessions: dict[int, JamSession] = {}
 
-    async def _build_embed(self, slot_index: int) -> discord.Embed:
+    def session_slot_index(self, guild_id: int) -> int | None:
+        """For callers (interaction_relay.py's component dispatch) that
+        need to know which slot a guild's Jam panel controls without a
+        live Interaction to look it up through."""
+        session = self._sessions.get(guild_id)
+        return session.slot_index if session is not None else None
+
+    async def build_embed(self, slot_index: int) -> discord.Embed:
         token = await self.web_api_link_manager.get_access_token(slot_index)
         if token is None:
             return discord.Embed(description="Spotify Web API isn't linked for this slot.")
@@ -64,16 +79,15 @@ class JamManager:
             embed.add_field(name="Up next", value="\n".join(lines), inline=False)
         return embed
 
-    async def start_jam(self, interaction: discord.Interaction, slot_index: int) -> None:
-        guild_id = interaction.guild_id
-        assert guild_id is not None
-        await self.stop_jam(guild_id)  # replace any existing panel for this guild, don't stack them
+    async def start_jam_in_channel(self, channel: discord.abc.Messageable, slot_index: int) -> None:
+        guild = getattr(channel, "guild", None)
+        assert guild is not None
+        await self.stop_jam(guild.id)  # replace any existing panel for this guild, don't stack them
 
-        embed = await self._build_embed(slot_index)
-        await interaction.response.send_message(embed=embed, view=JamView(self))
-        message = await interaction.original_response()
-        task = asyncio.create_task(self._refresh_loop(guild_id))
-        self._sessions[guild_id] = JamSession(message, slot_index, task)
+        embed = await self.build_embed(slot_index)
+        message = await channel.send(embed=embed, view=JamView(self))
+        task = asyncio.create_task(self._refresh_loop(guild.id))
+        self._sessions[guild.id] = JamSession(message, slot_index, task)
 
     async def stop_jam(self, guild_id: int) -> None:
         session = self._sessions.pop(guild_id, None)
@@ -98,25 +112,21 @@ class JamManager:
         if session is None:
             return
         try:
-            embed = await self._build_embed(session.slot_index)
+            embed = await self.build_embed(session.slot_index)
             await session.message.edit(embed=embed)
         except discord.NotFound:
             self._sessions.pop(guild_id, None)  # panel message was deleted -- stop trying
         except Exception:
             log.exception("failed to refresh jam panel for guild %s", guild_id)
 
-    async def handle_button(self, interaction: discord.Interaction, action: str) -> None:
-        guild_id = interaction.guild_id
-        session = self._sessions.get(guild_id) if guild_id is not None else None
-        if session is None:
-            await interaction.response.send_message("This Jam session has ended.", ephemeral=True)
-            return
-
-        token = await self.web_api_link_manager.get_access_token(session.slot_index)
+    async def apply_action(self, slot_index: int, action: str) -> bool:
+        """Performs the transport action against Spotify. Returns False if
+        the slot isn't linked or the call failed -- callers decide how to
+        surface that (gateway: an ephemeral reply; relay: the edited embed
+        already reflects reality either way, see interaction_relay.py)."""
+        token = await self.web_api_link_manager.get_access_token(slot_index)
         if token is None:
-            await interaction.response.send_message("Spotify Web API isn't linked for this slot.", ephemeral=True)
-            return
-
+            return False
         try:
             if action == "rewind":
                 await spotify_player_api.previous_track(token)
@@ -127,12 +137,29 @@ class JamManager:
             elif action == "skip":
                 await spotify_player_api.next_track(token)
         except Exception:
+            return False
+        return True
+
+    async def handle_button(self, interaction: discord.Interaction, action: str) -> None:
+        """Gateway-only entry point: JamView's buttons call this directly
+        since there's a live Interaction to respond through here. The
+        SQS-relay path (interaction_relay.py's _run_component) calls
+        apply_action + build_embed itself instead, since a relayed button
+        click has no gateway Interaction object -- just the same JSON."""
+        guild_id = interaction.guild_id
+        session = self._sessions.get(guild_id) if guild_id is not None else None
+        if session is None:
+            await interaction.response.send_message("This Jam session has ended.", ephemeral=True)
+            return
+
+        ok = await self.apply_action(session.slot_index, action)
+        if not ok:
             await interaction.response.send_message(
                 "That didn't work -- is Spotify Connect active on this slot?", ephemeral=True
             )
             return
 
-        embed = await self._build_embed(session.slot_index)
+        embed = await self.build_embed(session.slot_index)
         await interaction.response.edit_message(embed=embed)
 
 
@@ -141,18 +168,18 @@ class JamView(discord.ui.View):
         super().__init__(timeout=None)
         self.manager = manager
 
-    @discord.ui.button(label="Rewind", style=discord.ButtonStyle.secondary, emoji="⏮")
+    @discord.ui.button(label="Rewind", style=discord.ButtonStyle.secondary, emoji="⏮", custom_id="jam:rewind")
     async def rewind(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self.manager.handle_button(interaction, "rewind")
 
-    @discord.ui.button(label="Play", style=discord.ButtonStyle.success, emoji="▶")
+    @discord.ui.button(label="Play", style=discord.ButtonStyle.success, emoji="▶", custom_id="jam:play")
     async def play(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self.manager.handle_button(interaction, "play")
 
-    @discord.ui.button(label="Pause", style=discord.ButtonStyle.secondary, emoji="⏸")
+    @discord.ui.button(label="Pause", style=discord.ButtonStyle.secondary, emoji="⏸", custom_id="jam:pause")
     async def pause(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self.manager.handle_button(interaction, "pause")
 
-    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary, emoji="⏭")
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary, emoji="⏭", custom_id="jam:skip")
     async def skip(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         await self.manager.handle_button(interaction, "skip")

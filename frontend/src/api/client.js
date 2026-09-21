@@ -38,8 +38,13 @@ export const deleteSlot = (name) => request("DELETE", `/api/slots/${encodeURICom
 export const startWebApiLink = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/web-api-link/start`, {});
 export const finishWebApiLink = (name, user_id, pasted_url) =>
   request("POST", `/api/slots/${encodeURIComponent(name)}/web-api-link/finish`, { user_id, pasted_url });
-export const regenerateJamToken = (name) =>
-  request("POST", `/api/slots/${encodeURIComponent(name)}/jam-token/regenerate`, {});
+export const updateSlotSettings = (name, { currentPassword, newName, newPassword, avatarUrl }) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/settings`, {
+    current_password: currentPassword,
+    new_name: newName,
+    new_password: newPassword,
+    avatar_url: avatarUrl,
+  });
 
 // Player (by slot name) -- now-playing + queue in one request, see
 // bot/api.py's _player_state
@@ -47,15 +52,21 @@ export const getPlayerState = (name) => request("GET", `/api/slots/${encodeURICo
 export const addToQueue = (name, uri) => request("POST", `/api/slots/${encodeURIComponent(name)}/queue`, { uri });
 export const searchTracks = (name, q) =>
   request("GET", `/api/slots/${encodeURIComponent(name)}/search?q=${encodeURIComponent(q)}`);
+export const playPlayback = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/player/play`, {});
+export const pausePlayback = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/player/pause`, {});
+export const nextTrack = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/player/next`, {});
+export const previousTrack = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/player/previous`, {});
+export const seekPlayback = (name, positionMs) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/player/seek`, { position_ms: positionMs });
+export const setPlaybackVolume = (name, percent) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/player/volume`, { percent });
 
 // Library (admin only -- needs the user-library-read scope, see
 // bot/spotify_player_api.py's get_saved_albums)
 export const getLibraryAlbums = (name) => request("GET", `/api/slots/${encodeURIComponent(name)}/library/albums`);
 export const getAlbum = (name, albumId) =>
   request("GET", `/api/slots/${encodeURIComponent(name)}/albums/${encodeURIComponent(albumId)}`);
-
-// Jam mode (no admin session, token-scoped)
-export const getJamPlayerState = (token) => request("GET", `/api/jam/${encodeURIComponent(token)}/player-state`);
-export const addToJamQueue = (token, uri) => request("POST", `/api/jam/${encodeURIComponent(token)}/queue`, { uri });
-export const searchJamTracks = (token, q) =>
-  request("GET", `/api/jam/${encodeURIComponent(token)}/search?q=${encodeURIComponent(q)}`);
+export const getRecentlyPlayed = (name) => request("GET", `/api/slots/${encodeURIComponent(name)}/recently-played`);
+export const getPlaylists = (name) => request("GET", `/api/slots/${encodeURIComponent(name)}/playlists`);
+export const getPlaylist = (name, playlistId) =>
+  request("GET", `/api/slots/${encodeURIComponent(name)}/playlists/${encodeURIComponent(playlistId)}`);

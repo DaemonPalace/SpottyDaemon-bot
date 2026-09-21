@@ -1,16 +1,13 @@
 import { Navigate, Route, BrowserRouter as Router, Routes } from "react-router-dom";
 import "./App.css";
 import { useSupervisorStatus } from "./hooks/useSupervisorStatus";
-import JamView from "./pages/JamView";
 import SetupWizard from "./pages/SetupWizard";
 import SlotList from "./pages/SlotList";
 import SlotProfile from "./pages/SlotProfile";
 import Starting from "./pages/Starting";
 
-/** Redirects "/" (and any unmatched non-jam path) based on supervisor
- * status -- setup/starting/crash_looping/running -> the right screen.
- * Jam mode routes are mounted separately below and never go through this,
- * matching the "fully separate top-level route" decision in the plan. */
+/** Redirects "/" (and any unmatched path) based on supervisor status --
+ * setup/starting/crash_looping/running -> the right screen. */
 function RootRedirect() {
   const { state } = useSupervisorStatus();
   if (state === null) return null; // brief flash while the first poll resolves
@@ -23,7 +20,6 @@ export default function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/jam/:jamToken" element={<JamView />} />
         <Route path="/setup" element={<SetupWizard />} />
         <Route path="/starting" element={<Starting />} />
         <Route path="/slots" element={<SlotList />} />

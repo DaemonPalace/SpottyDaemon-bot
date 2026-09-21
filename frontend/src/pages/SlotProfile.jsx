@@ -1,134 +1,163 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   addToQueue,
   getAlbum,
   getLibraryAlbums,
   getPlayerState,
-  regenerateJamToken,
+  getPlaylist,
+  getPlaylists,
+  getRecentlyPlayed,
+  nextTrack,
+  pausePlayback,
+  playPlayback,
+  previousTrack,
   searchTracks,
-  selectSlot,
+  seekPlayback,
+  setPlaybackVolume,
 } from "../api/client";
+import NowPlayingBar from "../components/NowPlayingBar";
+import PasswordPromptModal from "../components/PasswordPromptModal";
+import { AlbumLibrary, QueueList } from "../components/Player";
+import PlaylistGrid from "../components/PlaylistGrid";
+import ProfileCircle from "../components/ProfileCircle";
+import RecentlyPlayedRow from "../components/RecentlyPlayedRow";
+import SearchBar from "../components/SearchBar";
+import SettingsModal from "../components/SettingsModal";
 import WebApiLinkFlow from "../components/WebApiLinkFlow";
-import { AlbumLibrary, NowPlayingHero, QueueList, TrackSearch } from "../components/Player";
 import { useSlotPlayer } from "../hooks/useSlotPlayer";
 
-function PasswordGate({ name, onUnlocked }) {
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState(null);
+export default function SlotProfile() {
+  const { name } = useParams();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [unlocked, setUnlocked] = useState(location.state || null); // select() response
+  const [showSettings, setShowSettings] = useState(false);
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    setError(null);
-    try {
-      const data = await selectSlot(name, password);
-      onUnlocked(data);
-    } catch (err) {
-      setError("Wrong password.");
-    }
-  }
-
-  return (
-    <div className="screen">
-      <h1>{name}</h1>
-      <form onSubmit={handleSubmit} className="form">
-        <label>
-          Slot password
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus />
-        </label>
-        {error && <p className="error">{error}</p>}
-        <button type="submit">Unlock</button>
-      </form>
-    </div>
-  );
-}
-
-function PlayerPanel({ name }) {
-  const { nowPlaying, queue, error, refresh } = useSlotPlayer({
-    name,
+  const { nowPlaying, queue, error: playerError, refresh } = useSlotPlayer({
+    name: unlocked ? name : undefined,
     fetchers: { getPlayerState },
   });
 
-  if (error && error.status === 400) {
-    return null; // not web-api-linked yet -- handled by the caller
+  if (!unlocked) {
+    return (
+      <PasswordPromptModal
+        name={name}
+        onClose={() => navigate("/slots")}
+        onUnlocked={setUnlocked}
+      />
+    );
   }
+
+  const webApiLinked = unlocked.web_api_linked;
 
   async function handleAdd(uri) {
     await addToQueue(name, uri);
     refresh();
   }
 
-  return (
-    <>
-      <NowPlayingHero nowPlaying={nowPlaying} />
-      <QueueList queue={queue} />
-      <TrackSearch search={(q) => searchTracks(name, q)} onAdd={handleAdd} />
-      <AlbumLibrary
-        name={name}
-        getAlbums={getLibraryAlbums}
-        getAlbumDetail={getAlbum}
-        onAdd={handleAdd}
-        relinkPrompt={
-          <WebApiLinkFlow
-            name={name}
-            prompt="Your library needs a fresh Spotify permission to show saved albums."
-            onLinked={() => window.location.reload()}
-          />
-        }
-      />
-    </>
-  );
-}
-
-export default function SlotProfile() {
-  const { name } = useParams();
-  const [unlocked, setUnlocked] = useState(null); // select() response
-  const [webApiLinked, setWebApiLinked] = useState(null);
-
-  if (!unlocked) {
-    return (
-      <PasswordGate
-        name={name}
-        onUnlocked={(data) => {
-          setUnlocked(data);
-          setWebApiLinked(data.web_api_linked);
-        }}
-      />
-    );
+  async function handlePlayPause() {
+    if (nowPlaying?.is_playing) await pausePlayback(name);
+    else await playPlayback(name);
+    refresh();
   }
 
-  async function handleRegenerateJam() {
-    const data = await regenerateJamToken(name);
-    setUnlocked({ ...unlocked, jam_token: data.jam_token });
+  async function handleSettingsUpdated(data) {
+    setShowSettings(false);
+    if (data.name !== name) {
+      navigate(`/slots/${data.name}`, { state: { ...unlocked, name: data.name, avatar_url: data.avatar_url }, replace: true });
+    } else {
+      setUnlocked({ ...unlocked, avatar_url: data.avatar_url });
+    }
   }
 
-  const jamUrl = `${window.location.origin}/jam/${unlocked.jam_token}`;
-
   return (
-    <div className="screen">
-      <h1>{name}</h1>
-      <p className="hint">
-        To actually join a voice channel, run <code>/connect {name}</code> in Discord with this slot's password.
-      </p>
+    <div className="dashboard">
+      <header className="dashboard-header">
+        <SearchBar search={(q) => searchTracks(name, q)} onAdd={handleAdd} />
+        <button className="ghost settings-btn" onClick={() => setShowSettings(true)}>
+          <ProfileCircle name={name} avatarUrl={unlocked.avatar_url} size="sm" />
+          <span>{name}</span>
+        </button>
+      </header>
 
-      {webApiLinked ? (
-        <PlayerPanel name={name} />
-      ) : (
-        <div className="card">
-          <WebApiLinkFlow
-            name={name}
-            prompt="Spotify Web API isn't linked for this slot yet -- needed for now-playing, queue, search, and your library."
-            onLinked={() => setWebApiLinked(true)}
-          />
-        </div>
-      )}
+      <div className="dashboard-body">
+        <aside className="dashboard-queue">
+          <QueueList queue={queue} />
+        </aside>
 
-      <div className="card">
-        <h3>Jam mode</h3>
-        <p className="hint">Anyone with this link can see now-playing and add to the queue -- no login needed.</p>
-        <input readOnly value={jamUrl} onFocus={(e) => e.target.select()} />
-        <button onClick={handleRegenerateJam}>Regenerate link</button>
+        <main className="dashboard-main">
+          {webApiLinked ? (
+            <>
+              {playerError && playerError.status !== 400 && <p className="error">{playerError.message}</p>}
+              <RecentlyPlayedRow
+                name={name}
+                getRecentlyPlayed={getRecentlyPlayed}
+                onAdd={handleAdd}
+                relinkPrompt={
+                  <WebApiLinkFlow
+                    name={name}
+                    prompt="Recently played needs a fresh Spotify permission."
+                    onLinked={() => window.location.reload()}
+                  />
+                }
+              />
+              <PlaylistGrid
+                name={name}
+                getPlaylists={getPlaylists}
+                getPlaylist={getPlaylist}
+                onAdd={handleAdd}
+                relinkPrompt={
+                  <WebApiLinkFlow
+                    name={name}
+                    prompt="Playlists need a fresh Spotify permission."
+                    onLinked={() => window.location.reload()}
+                  />
+                }
+              />
+              <AlbumLibrary
+                name={name}
+                getAlbums={getLibraryAlbums}
+                getAlbumDetail={getAlbum}
+                onAdd={handleAdd}
+                relinkPrompt={
+                  <WebApiLinkFlow
+                    name={name}
+                    prompt="Your library needs a fresh Spotify permission to show saved albums."
+                    onLinked={() => window.location.reload()}
+                  />
+                }
+              />
+            </>
+          ) : (
+            <div className="card">
+              <WebApiLinkFlow
+                name={name}
+                prompt="Spotify Web API isn't linked for this profile yet -- needed for now-playing, queue, search, playlists, and your library."
+                onLinked={() => setUnlocked({ ...unlocked, web_api_linked: true })}
+              />
+            </div>
+          )}
+        </main>
       </div>
+
+      <NowPlayingBar
+        nowPlaying={nowPlaying}
+        onPlayPause={handlePlayPause}
+        onPrev={() => previousTrack(name).then(refresh)}
+        onNext={() => nextTrack(name).then(refresh)}
+        onSeek={(positionMs) => seekPlayback(name, positionMs).then(refresh)}
+        onVolume={(percent) => setPlaybackVolume(name, percent)}
+      />
+
+      {showSettings && (
+        <SettingsModal
+          name={name}
+          avatarUrl={unlocked.avatar_url}
+          onClose={() => setShowSettings(false)}
+          onUpdated={handleSettingsUpdated}
+        />
+      )}
     </div>
   );
 }

@@ -115,10 +115,6 @@ def build_app() -> web.Application:
     app.router.add_post("/api/supervisor/bot/stop", _bot_stop)
     app.router.add_post("/api/supervisor/bot/restart", _bot_restart)
 
-    app.router.add_get("/api/jam/{token}/player-state", proxy.jam_player_state)
-    app.router.add_post("/api/jam/{token}/queue", proxy.jam_queue_post)
-    app.router.add_get("/api/jam/{token}/search", proxy.jam_search)
-
     # Catch-all: everything else under /api/* is proxied straight through to
     # bot/api.py. auth.session_middleware only gates DELETE /api/slots/*
     # (slot deletion) -- see auth.py's module docstring for why.

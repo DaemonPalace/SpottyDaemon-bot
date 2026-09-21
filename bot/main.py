@@ -1,8 +1,10 @@
+import asyncio
 import logging
 
 import discord
 from discord import app_commands
 
+import spotify_player_api
 from api import DiagnosticsApi
 from commands import (
     do_connect,
@@ -14,11 +16,13 @@ from commands import (
     do_link_web_api_finish,
     do_reconnect,
     forget_session,
+    get_active_slot_name,
 )
 from config import DEV_GUILD_ID, DISCORD_TOKEN, HOST_CONTROLLER, INTERACTIONS_QUEUE_URL, SLOTS
 from host_control import build_host_controller
 from idle_monitor import IdleMonitor
 from interaction_relay import InteractionRelay
+from jam import JamManager
 from librespot_manager import LibrespotManager
 from slot_store import SlotStore
 from spotify_link import LinkManager
@@ -45,6 +49,7 @@ interaction_relay = (
     InteractionRelay(client, librespot, slot_store, link_manager) if INTERACTIONS_QUEUE_URL else None
 )
 diagnostics_api = DiagnosticsApi(client, librespot, slot_store, link_manager, web_api_link_manager)
+jam_manager = JamManager(slot_store, web_api_link_manager)
 
 
 class PasswordModal(discord.ui.Modal):
@@ -106,7 +111,89 @@ async def reconnect(interaction: discord.Interaction, slot: str):
 async def disconnect(interaction: discord.Interaction):
     assert interaction.guild is not None
     content, ephemeral = await do_disconnect(interaction.guild)
+    await jam_manager.stop_jam(interaction.guild.id)
     await interaction.response.send_message(content, ephemeral=ephemeral)
+
+
+@tree.command(name="jam", description="Post a live now-playing/queue control panel in this channel")
+async def jam(interaction: discord.Interaction):
+    assert interaction.guild is not None
+    slot_name = get_active_slot_name(interaction.guild.id)
+    if slot_name is None:
+        await interaction.response.send_message("Connect a slot first with /connect.", ephemeral=True)
+        return
+    slot_meta = slot_store.get_by_name(slot_name)
+    if slot_meta is None or slot_meta.web_api_refresh_token is None:
+        await interaction.response.send_message(
+            f"Slot '{slot_name}' isn't linked for Spotify Web API yet -- run /link-web-api first.", ephemeral=True
+        )
+        return
+    await jam_manager.start_jam(interaction, slot_meta.index)
+
+
+async def _play_track_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    if len(current) < 2 or interaction.guild is None:
+        return []
+    slot_name = get_active_slot_name(interaction.guild.id)
+    if slot_name is None:
+        return []
+    slot_meta = slot_store.get_by_name(slot_name)
+    if slot_meta is None or slot_meta.web_api_refresh_token is None:
+        return []
+    token = await web_api_link_manager.get_access_token(slot_meta.index)
+    if token is None:
+        return []
+    try:
+        tracks = await asyncio.wait_for(spotify_player_api.search_tracks(token, current), timeout=2.5)
+    except Exception:
+        return []
+    choices = []
+    for track in tracks[:25]:
+        artists = ", ".join(a["name"] for a in track.get("artists", []))
+        choices.append(app_commands.Choice(name=f"{track['name']} — {artists}"[:100], value=track["uri"]))
+    return choices
+
+
+@tree.command(name="play", description="Search Spotify and play or queue a track")
+@app_commands.describe(track="Start typing a song name and pick a suggestion", mode="Play it now or add it to the queue")
+@app_commands.autocomplete(track=_play_track_autocomplete)
+@app_commands.choices(
+    mode=[
+        app_commands.Choice(name="Add to queue", value="queue"),
+        app_commands.Choice(name="Play now", value="play_now"),
+    ]
+)
+async def play(interaction: discord.Interaction, track: str, mode: app_commands.Choice[str]):
+    assert interaction.guild is not None
+    slot_name = get_active_slot_name(interaction.guild.id)
+    if slot_name is None:
+        await interaction.response.send_message("Connect a slot first with /connect.", ephemeral=True)
+        return
+    slot_meta = slot_store.get_by_name(slot_name)
+    token = await web_api_link_manager.get_access_token(slot_meta.index) if slot_meta else None
+    if token is None:
+        await interaction.response.send_message(
+            f"Slot '{slot_name}' isn't linked for Spotify Web API yet -- run /link-web-api first.", ephemeral=True
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    track_uri = track
+    if not track_uri.startswith("spotify:track:"):
+        # User typed free text and hit enter without picking a suggestion --
+        # Discord doesn't enforce choosing from autocomplete results.
+        results = await spotify_player_api.search_tracks(token, track)
+        if not results:
+            await interaction.followup.send(f"No tracks found for '{track}'.", ephemeral=True)
+            return
+        track_uri = results[0]["uri"]
+
+    if mode.value == "play_now":
+        await spotify_player_api.play_uri(token, track_uri)
+        await interaction.followup.send("Playing now.", ephemeral=True)
+    else:
+        await spotify_player_api.add_to_queue(token, track_uri)
+        await interaction.followup.send("Added to queue.", ephemeral=True)
 
 
 @tree.command(name="link", description="Claim a free Spotify slot and link your own Spotify account")
@@ -203,6 +290,7 @@ async def on_voice_state_update(member, before, after):
     channel = voice_client.channel
     if len([m for m in channel.members if not m.bot]) == 0:
         forget_session(guild.id)
+        await jam_manager.stop_jam(guild.id)
         await voice_client.disconnect(force=True)
 
 

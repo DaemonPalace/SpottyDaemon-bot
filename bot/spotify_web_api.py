@@ -37,12 +37,18 @@ log = logging.getLogger("spotify_web_api")
 AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 
-# user-modify-playback-state covers /me/player/queue add; user-read-currently-playing
-# + user-read-playback-state cover now-playing; user-library-read covers the
-# dashboard's "your library" saved-albums browser. A slot linked before
-# user-library-read was added needs to re-run /link-web-api to pick it up --
+# user-modify-playback-state covers /me/player/queue add plus play/pause/skip/
+# seek/volume; user-read-currently-playing + user-read-playback-state cover
+# now-playing; user-library-read covers the dashboard's "your library"
+# saved-albums browser; user-read-recently-played and playlist-read-private
+# cover the dashboard's playlists/recently-played sections; user-read-private
+# covers the profile picture shown in the profile selector. A slot linked
+# before one of these was added needs to re-run /link-web-api to pick it up --
 # see spotify_player_api.get_saved_albums's None return for how that's surfaced.
-SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing user-library-read"
+SCOPES = (
+    "user-read-playback-state user-modify-playback-state user-read-currently-playing "
+    "user-library-read user-read-recently-played playlist-read-private user-read-private"
+)
 
 PENDING_TIMEOUT_SECONDS = 600
 # Refresh a bit early so a token in active use doesn't expire mid-request.
@@ -126,6 +132,12 @@ class WebApiLinkManager:
         self.store = store
         self._pending: dict[str, _PendingWebApiLink] = {}
         self._cache: dict[int, _CachedAccessToken] = {}
+
+    def pending_slot_index(self, user_id: str) -> int | None:
+        """For callers (bot/api.py) that need the slot a pending link will
+        claim before calling finish_link, which pops the pending entry."""
+        pending = self._pending.get(user_id)
+        return pending.slot_index if pending is not None else None
 
     def start_link(self, user_id: str, slot_index: int) -> tuple[str, bool]:
         if not config.SPOTIFY_CLIENT_ID:

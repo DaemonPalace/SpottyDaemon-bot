@@ -67,11 +67,11 @@ class SlotMetadata:
     # /link-web-api completes; wiped by reset() same as everything else.
     web_api_refresh_token: str | None = None
     web_api_linked_at: float | None = None
-    # Jam-mode shareable link token (bot/api.py, supervisor/proxy.py). None
-    # until the slot is linked (generated at claim time) or if explicitly
-    # revoked. Knowing this token IS the access control for Jam mode -- no
-    # password involved. Wiped by reset() same as everything else.
-    jam_token: str | None = None
+    # Profile-selector display info. avatar_url defaults to the linked
+    # Spotify account's own picture (set once by the web-api-link/finish
+    # route) and can be overridden by the slot's own settings screen.
+    avatar_url: str | None = None
+    spotify_display_name: str | None = None
 
 
 class SlotStore:
@@ -99,7 +99,8 @@ class SlotStore:
                     claimed_at=entry.get("claimed_at"),
                     web_api_refresh_token=entry.get("web_api_refresh_token"),
                     web_api_linked_at=entry.get("web_api_linked_at"),
-                    jam_token=entry.get("jam_token"),
+                    avatar_url=entry.get("avatar_url"),
+                    spotify_display_name=entry.get("spotify_display_name"),
                 )
         # A slot stuck "linking" from a previous process is stale -- the
         # transient OAuth subprocess that would have finished it is gone
@@ -121,7 +122,8 @@ class SlotStore:
                     "claimed_at": slot.claimed_at,
                     "web_api_refresh_token": slot.web_api_refresh_token,
                     "web_api_linked_at": slot.web_api_linked_at,
-                    "jam_token": slot.jam_token,
+                    "avatar_url": slot.avatar_url,
+                    "spotify_display_name": slot.spotify_display_name,
                 }
                 for slot in self._slots.values()
             }
@@ -178,18 +180,41 @@ class SlotStore:
             slot.web_api_linked_at = time.time()
             self._save_locked()
 
-    async def regenerate_jam_token(self, index: int) -> str:
+    async def set_profile_info(self, index: int, avatar_url: str | None, display_name: str | None) -> None:
+        """Called once right after web-api-link finishes to seed the
+        profile-selector picture/name from the linked Spotify account.
+        Never overwrites an avatar the slot owner has since set manually in
+        settings -- see update_settings."""
         async with self._lock:
-            token = secrets.token_urlsafe(24)
-            self._slots[index].jam_token = token
+            slot = self._slots[index]
+            slot.spotify_display_name = display_name
+            if slot.avatar_url is None:
+                slot.avatar_url = avatar_url
             self._save_locked()
-            return token
 
-    def get_by_jam_token(self, token: str) -> SlotMetadata | None:
-        for slot in self._slots.values():
-            if slot.jam_token is not None and hmac.compare_digest(slot.jam_token, token):
-                return slot
-        return None
+    async def update_settings(
+        self,
+        index: int,
+        new_name: str | None = None,
+        new_password: str | None = None,
+        avatar_url: str | None = None,
+    ) -> str | None:
+        """Applies the slot settings screen's edits. Returns an error
+        message on failure (bad name / name taken), or None on success."""
+        async with self._lock:
+            slot = self._slots[index]
+            if new_name is not None and new_name != slot.friendly_name:
+                if not SLOT_NAME_RE.match(new_name):
+                    return "Name must be 1-32 characters: lowercase letters, numbers, hyphens."
+                if any(s.friendly_name == new_name for s in self._slots.values() if s.index != index):
+                    return "That name is already taken."
+                slot.friendly_name = new_name
+            if new_password:
+                slot.password_hash = hash_password(new_password)
+            if avatar_url is not None:
+                slot.avatar_url = avatar_url
+            self._save_locked()
+            return None
 
     async def reset(self, index: int) -> None:
         async with self._lock:

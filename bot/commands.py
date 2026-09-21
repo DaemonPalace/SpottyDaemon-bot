@@ -334,6 +334,13 @@ def forget_session(guild_id: int) -> None:
     _active_sessions.pop(guild_id, None)
 
 
+def get_active_slot_name(guild_id: int) -> str | None:
+    """Which slot a guild is currently /connect-ed to, if any -- used by
+    /jam and /play to find the Spotify account they should act on."""
+    session = _active_sessions.get(guild_id)
+    return session.slot_name if session is not None else None
+
+
 def active_sessions_snapshot() -> list[dict]:
     """JSON-safe view of _active_sessions for the diagnostics API -- omits
     the generation counter (internal race-guard, not diagnostic info)."""

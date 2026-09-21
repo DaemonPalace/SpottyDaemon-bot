@@ -1,88 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { deleteSlot, finishLink, listSlots, login, startBot, startLink } from "../api/client";
+import { deleteSlot, listSlots, login, startBot } from "../api/client";
+import CreateProfileModal from "../components/CreateProfileModal";
+import PasswordPromptModal from "../components/PasswordPromptModal";
+import ProfileCircle from "../components/ProfileCircle";
 import { useSupervisorStatus } from "../hooks/useSupervisorStatus";
 
-function LinkNewSlot({ onLinked }) {
-  const [step, setStep] = useState("start"); // start -> waiting-login -> done
-  const [slotName, setSlotName] = useState("");
-  const [password, setPassword] = useState("");
-  const [authorizeMessage, setAuthorizeMessage] = useState("");
-  const [pastedUrl, setPastedUrl] = useState("");
-  const [userId, setUserId] = useState(null);
-  const [error, setError] = useState(null);
-  const [busy, setBusy] = useState(false);
-
-  async function handleStart(e) {
-    e.preventDefault();
-    setError(null);
-    setBusy(true);
-    try {
-      const data = await startLink(slotName.trim().toLowerCase(), password);
-      if (!data.success) throw new Error(data.message);
-      setAuthorizeMessage(data.message);
-      setUserId(data.user_id);
-      setStep("waiting-login");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleFinish(e) {
-    e.preventDefault();
-    setError(null);
-    setBusy(true);
-    try {
-      const data = await finishLink(userId, pastedUrl.trim() || null);
-      if (!data.success) throw new Error(data.message);
-      setStep("done");
-      onLinked();
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (step === "start") {
-    return (
-      <form onSubmit={handleStart} className="form">
-        <h3>Link a new Spotify account</h3>
-        <label>
-          Slot name
-          <input value={slotName} onChange={(e) => setSlotName(e.target.value)} placeholder="e.g. alices-jams" required />
-        </label>
-        <label>
-          Set a password for this slot
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-        </label>
-        {error && <p className="error">{error}</p>}
-        <button type="submit" disabled={busy}>Start linking</button>
-      </form>
-    );
-  }
-
-  if (step === "waiting-login") {
-    return (
-      <form onSubmit={handleFinish} className="form">
-        <h3>Finish linking</h3>
-        <p className="hint" style={{ whiteSpace: "pre-wrap" }}>{authorizeMessage}</p>
-        <label>
-          Failed-redirect url (leave blank if the page loaded fine -- same machine case)
-          <input value={pastedUrl} onChange={(e) => setPastedUrl(e.target.value)} placeholder="http://127.0.0.1:.../login?code=..." />
-        </label>
-        {error && <p className="error">{error}</p>}
-        <button type="submit" disabled={busy}>Finish linking</button>
-      </form>
-    );
-  }
-
-  return <p>Linked! Refresh the list below.</p>;
-}
-
-function DeleteSlotConfirm({ name, onDeleted, onCancel }) {
+function DeleteConfirmModal({ name, onClose, onDeleted }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -102,19 +26,32 @@ function DeleteSlotConfirm({ name, onDeleted, onCancel }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="form inline">
-      <input
-        type="password"
-        placeholder="admin password to confirm"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        required
-        autoFocus
-      />
-      <button type="submit" className="danger" disabled={busy}>Confirm delete</button>
-      <button type="button" onClick={onCancel} disabled={busy}>Cancel</button>
-      {error && <p className="error">{error}</p>}
-    </form>
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="modal-card" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <h2>Delete "{name}"?</h2>
+          <button type="button" className="modal-close" onClick={onClose} aria-label="Close">✕</button>
+        </div>
+        <div className="modal-body">
+          <form onSubmit={handleSubmit} className="form">
+            <label>
+              Admin password to confirm
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                autoFocus
+              />
+            </label>
+            {error && <p className="error">{error}</p>}
+            <button type="submit" className="danger" disabled={busy}>
+              {busy ? "Deleting..." : "Confirm delete"}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -122,9 +59,11 @@ export default function SlotList() {
   const { state } = useSupervisorStatus();
   const [slots, setSlots] = useState([]);
   const [error, setError] = useState(null);
-  const [showLinkForm, setShowLinkForm] = useState(false);
   const [starting, setStarting] = useState(false);
-  const [confirmingDelete, setConfirmingDelete] = useState(null); // slot name, or null
+  const [managing, setManaging] = useState(false);
+  const [unlocking, setUnlocking] = useState(null); // slot name, or null
+  const [creating, setCreating] = useState(false);
+  const [deleting, setDeleting] = useState(null); // slot name, or null
   const navigate = useNavigate();
 
   async function refresh() {
@@ -154,7 +93,7 @@ export default function SlotList() {
   if (state !== null && state !== "running") {
     return (
       <div className="screen">
-        <h1>Slots</h1>
+        <h1>Profiles</h1>
         <p className="hint">
           The bot process isn't running (status: {state}
           {starting ? ", starting..." : ""}).
@@ -167,47 +106,70 @@ export default function SlotList() {
     );
   }
 
-  return (
-    <div className="screen">
-      <h1>Slots</h1>
-      {error && <p className="error">{error}</p>}
-      <ul className="slot-list">
-        {slots.map((slot) => (
-          <li key={slot.index} className="slot-row">
-            <span className="slot-index">#{slot.index}</span>
-            {slot.state === "claimed" ? (
-              <>
-                <button onClick={() => navigate(`/slots/${slot.name}`)}>{slot.name}</button>
-                <span className={slot.running ? "badge running" : "badge"}>{slot.running ? "playing" : "idle"}</span>
-                {confirmingDelete === slot.name ? (
-                  <DeleteSlotConfirm
-                    name={slot.name}
-                    onDeleted={() => {
-                      setConfirmingDelete(null);
-                      refresh();
-                    }}
-                    onCancel={() => setConfirmingDelete(null)}
-                  />
-                ) : (
-                  <button className="danger" onClick={() => setConfirmingDelete(slot.name)}>Delete</button>
-                )}
-              </>
-            ) : (
-              <span className="hint">free</span>
-            )}
-          </li>
-        ))}
-      </ul>
+  const claimed = slots.filter((s) => s.state === "claimed");
+  const hasFreeSlot = slots.some((s) => s.state === "free");
 
-      {showLinkForm ? (
-        <LinkNewSlot
-          onLinked={() => {
-            setShowLinkForm(false);
+  return (
+    <div className="profile-select">
+      <h1 className="profile-select-title">Who's playing?</h1>
+      {error && <p className="error">{error}</p>}
+
+      <div className="profile-grid">
+        {claimed.map((slot) => (
+          <div key={slot.index} className="profile-item">
+            <ProfileCircle
+              name={slot.name}
+              avatarUrl={slot.avatar_url}
+              running={slot.running}
+              onClick={() => (managing ? setDeleting(slot.name) : setUnlocking(slot.name))}
+            >
+              {managing && <span className="profile-circle-badge">✕</span>}
+            </ProfileCircle>
+            <span className="profile-item-name">{slot.name}</span>
+          </div>
+        ))}
+
+        {!managing && hasFreeSlot && (
+          <div className="profile-item">
+            <ProfileCircle name="+" onClick={() => setCreating(true)} size="lg" />
+            <span className="profile-item-name">Add profile</span>
+          </div>
+        )}
+      </div>
+
+      {claimed.length > 0 && (
+        <button className="ghost profile-manage-btn" onClick={() => setManaging((m) => !m)}>
+          {managing ? "Done" : "Manage profiles"}
+        </button>
+      )}
+
+      {unlocking && (
+        <PasswordPromptModal
+          name={unlocking}
+          onClose={() => setUnlocking(null)}
+          onUnlocked={(data) => navigate(`/slots/${unlocking}`, { state: data })}
+        />
+      )}
+
+      {creating && (
+        <CreateProfileModal
+          onClose={() => setCreating(false)}
+          onCreated={() => {
+            setCreating(false);
             refresh();
           }}
         />
-      ) : (
-        <button onClick={() => setShowLinkForm(true)}>Link a new account</button>
+      )}
+
+      {deleting && (
+        <DeleteConfirmModal
+          name={deleting}
+          onClose={() => setDeleting(null)}
+          onDeleted={() => {
+            setDeleting(null);
+            refresh();
+          }}
+        />
       )}
     </div>
   );

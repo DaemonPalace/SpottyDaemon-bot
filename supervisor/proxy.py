@@ -1,8 +1,5 @@
 """Forwards browser-facing /api/* requests to bot/api.py, injecting the
-shared API_TOKEN bearer server-side so the browser never sees it. Also
-resolves Jam mode's /jam/<token>/... routes to the underlying slot name
-via bot/api.py's by-jam-token lookup, entirely separate from the admin
-session cookie (supervisor/auth.py already treats /jam/ as a public path).
+shared API_TOKEN bearer server-side so the browser never sees it.
 """
 
 import logging
@@ -54,36 +51,3 @@ async def proxy_api(request: web.Request) -> web.Response:
     return await _forward(request, request.path)
 
 
-async def jam_player_state(request: web.Request) -> web.Response:
-    slot_name = await _resolve_jam_token(request.match_info["token"])
-    return await _forward(request, f"/api/slots/{slot_name}/player-state")
-
-
-async def jam_queue_post(request: web.Request) -> web.Response:
-    slot_name = await _resolve_jam_token(request.match_info["token"])
-    return await _forward(request, f"/api/slots/{slot_name}/queue")
-
-
-async def jam_search(request: web.Request) -> web.Response:
-    slot_name = await _resolve_jam_token(request.match_info["token"])
-    return await _forward(request, f"/api/slots/{slot_name}/search")
-
-
-async def _resolve_jam_token(token: str) -> str:
-    token_resp = await _forward_raw(f"/api/slots/by-jam-token/{token}")
-    if token_resp.status != 200:
-        raise web.HTTPNotFound(text="invalid or expired jam link")
-    import json
-
-    return json.loads(token_resp.body)["name"]
-
-
-async def _forward_raw(path: str) -> web.Response:
-    token = _bot_api_token()
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"{_bot_base_url()}{path}", headers=headers, timeout=aiohttp.ClientTimeout(total=10)
-        ) as resp:
-            body = await resp.read()
-            return web.Response(status=resp.status, body=body)

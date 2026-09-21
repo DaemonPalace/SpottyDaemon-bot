@@ -24,9 +24,8 @@ SESSION_LIFETIME_SECONDS = 7 * 24 * 3600
 REISSUE_THRESHOLD_SECONDS = 24 * 3600
 
 # The only request that needs an admin session: deleting a slot. Every
-# other route (frontend SPA shell, all other /api/* endpoints, jam-mode
-# routes -- their own token IS the auth, handled separately in proxy.py)
-# is reachable with no session at all.
+# other route (frontend SPA shell, all other /api/* endpoints) is reachable
+# with no session at all.
 def _is_admin_gated(method: str, path: str) -> bool:
     return method == "DELETE" and path.startswith("/api/slots/")
 

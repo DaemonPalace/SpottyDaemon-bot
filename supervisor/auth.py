@@ -51,7 +51,9 @@ def _verify(cookie_value: str) -> bool:
 
 def issue_cookie(response: web.StreamResponse) -> None:
     expiry = int(time.time()) + SESSION_LIFETIME_SECONDS
-    response.set_cookie(COOKIE_NAME, _sign(expiry), httponly=True, samesite="Lax", max_age=SESSION_LIFETIME_SECONDS)
+    response.set_cookie(
+        COOKIE_NAME, _sign(expiry), httponly=True, samesite="Lax", secure=True, max_age=SESSION_LIFETIME_SECONDS
+    )
 
 
 def clear_cookie(response: web.StreamResponse) -> None:

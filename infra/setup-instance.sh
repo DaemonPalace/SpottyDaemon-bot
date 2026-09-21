@@ -30,7 +30,7 @@ echo "Information page (application ID + public key)."
 echo
 
 echo "== system packages =="
-sudo dnf install -y python3.12 python3.12-pip git gcc pkgconfig openssl-devel make
+sudo dnf install -y python3.12 python3.12-pip git gcc pkgconfig openssl-devel make nodejs
 
 echo "== ffmpeg (static build, not in AL2023 repos) =="
 if ! command -v ffmpeg >/dev/null 2>&1; then
@@ -62,6 +62,12 @@ git checkout v0.8.0
 cargo build --release --no-default-features --features "native-tls" -j 1
 sudo cp target/release/librespot /usr/local/bin/
 librespot --version
+
+echo "== build dashboard frontend =="
+cd "$REPO_SRC/frontend"
+npm ci
+npm run build
+cd "$REPO_SRC"
 
 echo "== deploy bot app =="
 sudo mkdir -p "$APP_DIR"
@@ -127,12 +133,42 @@ EOF
   echo "-> saved to $APP_DIR/.env"
 fi
 
-echo "== systemd service =="
+echo "== systemd services (bot + dashboard) =="
 sudo useradd -r -s /sbin/nologin discordbot || true
 sudo chown -R discordbot:discordbot "$APP_DIR"
-sudo cp "$APP_DIR/systemd/discord-music-bot.service" /etc/systemd/system/
+sudo cp "$APP_DIR/systemd/discord-music-bot.service" "$APP_DIR/systemd/discord-dashboard.service" /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable discord-music-bot
+sudo systemctl enable discord-music-bot discord-dashboard
+
+echo "== Caddy (reverse proxy + auto-TLS for the dashboard) =="
+# Static binary, not a dnf package -- AL2023 has no official Caddy repo, and
+# this matches the ffmpeg install above (upstream static build > distro repo
+# hunting on a distro that doesn't carry it).
+if ! command -v caddy >/dev/null 2>&1; then
+  curl -L -o /tmp/caddy.tar.gz "https://github.com/caddyserver/caddy/releases/latest/download/caddy_$(curl -s https://api.github.com/repos/caddyserver/caddy/releases/latest | grep -oP '"tag_name": "v\K[^"]+')_linux_amd64.tar.gz"
+  tar xzf /tmp/caddy.tar.gz -C /tmp caddy
+  sudo mv /tmp/caddy /usr/local/bin/caddy
+fi
+caddy version
+
+read -r -p "Domain for the dashboard [Enter to skip, e.g. music.daemonpalace.space]: " DASHBOARD_DOMAIN_INPUT
+if [ -n "$DASHBOARD_DOMAIN_INPUT" ]; then
+  sudo mkdir -p /etc/caddy
+  sudo tee /etc/caddy/Caddyfile >/dev/null <<EOF
+$DASHBOARD_DOMAIN_INPUT {
+    reverse_proxy 127.0.0.1:8080
+}
+EOF
+  sudo cp "$APP_DIR/systemd/caddy.service" /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now caddy
+  echo "-> Caddyfile written for $DASHBOARD_DOMAIN_INPUT. Make sure its DNS A record"
+  echo "   points at this instance's (Elastic) IP and inbound 80/443 are open in"
+  echo "   its security group before it'll get a cert."
+else
+  echo "-> skipped -- point an A record at this instance and re-run this script,"
+  echo "   or write /etc/caddy/Caddyfile by hand and enable systemd/caddy.service."
+fi
 
 DISCORD_PUBLIC_KEY_SAVED="$(sudo grep -oP '^DISCORD_PUBLIC_KEY=\K.*' "$APP_DIR/.env" 2>/dev/null || true)"
 INTERACTIONS_QUEUE_URL_SAVED="$(sudo grep -oP '^INTERACTIONS_QUEUE_URL=\K.*' "$APP_DIR/.env" 2>/dev/null || true)"

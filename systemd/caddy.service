@@ -1,0 +1,16 @@
+[Unit]
+Description=Caddy (reverse proxy + auto-TLS for the dashboard)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/caddy run --environ --config /etc/caddy/Caddyfile
+ExecReload=/usr/local/bin/caddy reload --config /etc/caddy/Caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -44,6 +44,7 @@ from commands import (
     do_disconnect,
     do_link,
     do_link_finish,
+    do_link_web_api,
     do_link_web_api_finish,
     do_play,
     do_reconnect,
@@ -144,10 +145,14 @@ class InteractionRelay:
                 await self._run_component(interaction, guild)
             else:
                 if member is None:
-                    content, ephemeral = "Couldn't find you in this server's member cache — try again in a moment.", True
+                    content, ephemeral, authorize_url = (
+                        "Couldn't find you in this server's member cache — try again in a moment.",
+                        True,
+                        None,
+                    )
                 else:
-                    content, ephemeral = await self._run_command(interaction, guild, member)
-                await self._followup(interaction, content, ephemeral)
+                    content, ephemeral, authorize_url = await self._run_command(interaction, guild, member)
+                await self._followup(interaction, content, ephemeral, authorize_url=authorize_url)
         except Exception:
             log.exception("failed to process relayed interaction")
         finally:
@@ -157,7 +162,13 @@ class InteractionRelay:
                 ReceiptHandle=receipt_handle,
             )
 
-    async def _run_command(self, interaction: dict, guild: discord.Guild, member: discord.Member) -> tuple[str, bool]:
+    async def _run_command(
+        self, interaction: dict, guild: discord.Guild, member: discord.Member
+    ) -> tuple[str, bool, str | None]:
+        """Returns (content, ephemeral, authorize_url) -- authorize_url is
+        only ever non-None for link-web-api/link's modal-submit, so
+        _followup can attach a Log-in-with-Spotify button alongside the
+        text (those two are the only replies here that need one)."""
         if interaction.get("type") == TYPE_MODAL_SUBMIT:
             return await self._run_modal_submit(interaction, guild, member)
 
@@ -166,21 +177,33 @@ class InteractionRelay:
         member_id = member.id
 
         if command_name == "disconnect":
-            return await do_disconnect(guild)
-        if command_name == "link-finish":
-            return await do_link_finish(str(member_id), options.get("url"), self.link_manager)
-        if command_name == "link-web-api-finish":
-            return await do_link_web_api_finish(str(member_id), options.get("url", ""), self.web_api_link_manager)
-        if command_name == "delete-slot":
+            content, ephemeral = await do_disconnect(guild)
+        elif command_name == "link-finish":
+            content, ephemeral = await do_link_finish(str(member_id), options.get("url"), self.link_manager)
+        elif command_name == "link-web-api":
+            content, ephemeral = await do_link_web_api(
+                str(member_id), options.get("slotname", ""), self.store, self.web_api_link_manager
+            )
+            return content, ephemeral, self.web_api_link_manager.authorize_url(str(member_id))
+        elif command_name == "link-web-api-finish":
+            content, ephemeral = await do_link_web_api_finish(
+                str(member_id), options.get("url", ""), self.web_api_link_manager
+            )
+        elif command_name == "delete-slot":
             permissions = int(interaction["member"].get("permissions", "0"))
             if not permissions & MANAGE_GUILD_PERMISSION:
-                return "You need the Manage Server permission to do that.", True
-            return await do_delete_slot(options["name"], self.store, self.librespot)
-        if command_name == "jam":
-            return await self._run_jam(interaction, guild)
-        if command_name == "play":
-            return await do_play(guild.id, options.get("track", ""), options.get("mode", "queue"), self.store, self.web_api_link_manager)
-        return f"Unknown command: {command_name}", True
+                content, ephemeral = "You need the Manage Server permission to do that.", True
+            else:
+                content, ephemeral = await do_delete_slot(options["name"], self.store, self.librespot)
+        elif command_name == "jam":
+            content, ephemeral = await self._run_jam(interaction, guild)
+        elif command_name == "play":
+            content, ephemeral = await do_play(
+                guild.id, options.get("track", ""), options.get("mode", "queue"), self.store, self.web_api_link_manager
+            )
+        else:
+            content, ephemeral = f"Unknown command: {command_name}", True
+        return content, ephemeral, None
 
     async def _run_jam(self, interaction: dict, guild: discord.Guild) -> tuple[str, bool]:
         slot_index, error = resolve_jam_slot(guild.id, self.store)
@@ -193,7 +216,7 @@ class InteractionRelay:
 
     async def _run_modal_submit(
         self, interaction: dict, guild: discord.Guild, member: discord.Member
-    ) -> tuple[str, bool]:
+    ) -> tuple[str, bool, str | None]:
         custom_id = interaction["data"]["custom_id"]
         command_name, _, argument = custom_id.partition(":")
 
@@ -205,16 +228,19 @@ class InteractionRelay:
         channel_id = int(interaction["channel_id"]) if interaction.get("channel_id") else None
 
         if command_name == "connect":
-            return await do_connect(
+            content, ephemeral = await do_connect(
                 guild, member, argument, password, self.librespot, self.store, channel_id
             )
-        if command_name == "reconnect":
-            return await do_reconnect(
+        elif command_name == "reconnect":
+            content, ephemeral = await do_reconnect(
                 guild, member, argument, password, self.librespot, self.store, channel_id
             )
-        if command_name == "link":
-            return await do_link(str(member.id), argument, password, self.link_manager)
-        return f"Unknown modal submission: {custom_id}", True
+        elif command_name == "link":
+            content, ephemeral = await do_link(str(member.id), argument, password, self.link_manager)
+            return content, ephemeral, self.link_manager.authorize_url(str(member.id))
+        else:
+            content, ephemeral = f"Unknown modal submission: {custom_id}", True
+        return content, ephemeral, None
 
     async def _run_component(self, interaction: dict, guild: discord.Guild) -> None:
         """Handles a relayed button click. Unlike _run_command, this sends
@@ -234,12 +260,28 @@ class InteractionRelay:
         embed = await self.jam_manager.build_embed(slot_index)
         await self._edit_original(interaction, embed)
 
-    async def _followup(self, interaction: dict, content: str, ephemeral: bool) -> None:
+    async def _followup(
+        self, interaction: dict, content: str, ephemeral: bool, authorize_url: str | None = None
+    ) -> None:
         application_id = interaction["application_id"]
         token = interaction["token"]
         payload = {"content": content}
         if ephemeral:
             payload["flags"] = EPHEMERAL
+        if authorize_url:
+            # A pure link-style button: Discord opens it client-side with
+            # no interaction generated, so it's safe to send from here even
+            # though there's no live Interaction to answer a click through
+            # (unlike LinkStartView's paste-back button in main.py, which
+            # this relay path deliberately omits -- see its docstring).
+            payload["components"] = [
+                {
+                    "type": 1,
+                    "components": [
+                        {"type": 2, "style": 5, "label": "Log in with Spotify", "url": authorize_url}
+                    ],
+                }
+            ]
         url = f"{DISCORD_API}/webhooks/{application_id}/{token}"
         async with self._http.post(url, json=payload) as resp:
             if resp.status >= 300:

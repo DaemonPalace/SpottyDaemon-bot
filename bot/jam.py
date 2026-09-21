@@ -21,6 +21,8 @@ import logging
 import discord
 
 import spotify_player_api
+from commands import flush_slot_pipe
+from librespot_manager import LibrespotManager
 from slot_store import SlotStore
 from spotify_web_api import WebApiLinkManager
 
@@ -38,9 +40,10 @@ class JamSession:
 
 
 class JamManager:
-    def __init__(self, slot_store: SlotStore, web_api_link_manager: WebApiLinkManager):
+    def __init__(self, slot_store: SlotStore, web_api_link_manager: WebApiLinkManager, librespot: LibrespotManager):
         self.slot_store = slot_store
         self.web_api_link_manager = web_api_link_manager
+        self.librespot = librespot
         self._sessions: dict[int, JamSession] = {}
 
     def session_slot_index(self, guild_id: int) -> int | None:
@@ -129,12 +132,18 @@ class JamManager:
             return False
         try:
             if action == "rewind":
+                # Flush right before the commands that swap which track is
+                # playing -- play/pause don't introduce new track audio, so
+                # they're left alone. See librespot_manager.py's
+                # LibrespotProcess.flush() for why this matters.
+                flush_slot_pipe(slot_index, self.slot_store, self.librespot)
                 await spotify_player_api.previous_track(token)
             elif action == "play":
                 await spotify_player_api.play(token)
             elif action == "pause":
                 await spotify_player_api.pause(token)
             elif action == "skip":
+                flush_slot_pipe(slot_index, self.slot_store, self.librespot)
                 await spotify_player_api.next_track(token)
         except Exception:
             return False

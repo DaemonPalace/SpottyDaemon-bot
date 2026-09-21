@@ -332,7 +332,9 @@ class InteractionRelay:
             return
         if custom_id.startswith("play-track:"):
             _, mode, track_uri = custom_id.split(":", 2)
-            content, ephemeral = await do_play_track(guild.id, track_uri, mode, self.store, self.web_api_link_manager)
+            content, ephemeral = await do_play_track(
+                guild.id, track_uri, mode, self.store, self.web_api_link_manager, self.librespot
+            )
             await self._followup(interaction, content, ephemeral)
             return
         log.warning("unknown component custom_id: %s", custom_id)

@@ -358,17 +358,33 @@ def resolve_jam_slot(guild_id: int, store: SlotStore) -> tuple[int, None] | tupl
 
 async def resolve_play_token(
     guild_id: int, store: SlotStore, web_api_link_manager: WebApiLinkManager
-) -> tuple[str, None] | tuple[None, tuple[str, bool]]:
+) -> tuple[str, int, None] | tuple[None, None, tuple[str, bool]]:
     """Shared by do_search_tracks/do_play_track: resolves the guild's
-    active slot down to a usable Spotify access token, or the error to
+    active slot down to a usable Spotify access token (and its index,
+    needed by do_play_track to flush the right pipe), or the error to
     show the user."""
     slot_index, error = resolve_jam_slot(guild_id, store)
     if error is not None:
-        return None, error
+        return None, None, error
     token = await web_api_link_manager.get_access_token(slot_index)
     if token is None:
-        return None, ("Spotify Web API isn't linked for this slot.", True)
-    return token, None
+        return None, None, ("Spotify Web API isn't linked for this slot.", True)
+    return token, slot_index, None
+
+
+def flush_slot_pipe(slot_index: int, store: SlotStore, librespot: LibrespotManager) -> None:
+    """Discards whatever's currently queued in the slot's audio pipe --
+    call this right before issuing an API-driven track change (play_uri,
+    skip, rewind) so the old track's leftover tail never reaches ffmpeg
+    mixed in with the new track's head. See librespot_manager.py's
+    LibrespotProcess.flush() for why this matters. A no-op if the slot
+    isn't actually running (nothing to flush)."""
+    slot_meta = store.get_by_index(slot_index)
+    if slot_meta is None or slot_meta.friendly_name is None:
+        return
+    proc = librespot.processes.get(slot_meta.friendly_name)
+    if proc is not None:
+        proc.flush()
 
 
 async def do_search_tracks(
@@ -379,7 +395,7 @@ async def do_search_tracks(
     to 5 tracks as a Play/Queue button picker instead of blindly guessing
     the top hit (autocomplete can't be relied on to have run first, see
     interaction_relay.py)."""
-    token, error = await resolve_play_token(guild_id, store, web_api_link_manager)
+    token, _slot_index, error = await resolve_play_token(guild_id, store, web_api_link_manager)
     if error is not None:
         return None, error
     results = await spotify_player_api.search_tracks(token, query)
@@ -387,16 +403,25 @@ async def do_search_tracks(
 
 
 async def do_play_track(
-    guild_id: int, track_uri: str, mode: str, store: SlotStore, web_api_link_manager: WebApiLinkManager
+    guild_id: int,
+    track_uri: str,
+    mode: str,
+    store: SlotStore,
+    web_api_link_manager: WebApiLinkManager,
+    librespot: LibrespotManager,
 ) -> tuple[str, bool]:
     """Returns (content, ephemeral). `mode` is "play_now" or "queue" --
     called when a specific track's Play/Queue button (from
     do_search_tracks' results) is clicked."""
-    token, error = await resolve_play_token(guild_id, store, web_api_link_manager)
+    token, slot_index, error = await resolve_play_token(guild_id, store, web_api_link_manager)
     if error is not None:
         return error
     try:
         if mode == "play_now":
+            # Flush right before the command that actually swaps which
+            # track is playing -- add_to_queue doesn't cause an immediate
+            # transition, so it's left alone.
+            flush_slot_pipe(slot_index, store, librespot)
             await spotify_player_api.play_uri(token, track_uri)
             return "Playing now.", True
         await spotify_player_api.add_to_queue(token, track_uri)

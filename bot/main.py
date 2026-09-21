@@ -44,7 +44,7 @@ web_api_link_manager = WebApiLinkManager(slot_store)
 host_controller = build_host_controller(HOST_CONTROLLER)
 idle_monitor = IdleMonitor(client, slot_store, host_controller)
 diagnostics_api = DiagnosticsApi(client, librespot, slot_store, link_manager, web_api_link_manager)
-jam_manager = JamManager(slot_store, web_api_link_manager)
+jam_manager = JamManager(slot_store, web_api_link_manager, librespot)
 # None when no Lambda/SQS relay is configured -- the gateway CommandTree
 # below is then the one and only command path (self-host/standalone default).
 interaction_relay = (
@@ -212,7 +212,9 @@ class TrackResultsView(discord.ui.View):
 
     def _make_callback(self, guild_id: int, track_uri: str, mode: str):
         async def callback(interaction: discord.Interaction) -> None:
-            content, ephemeral = await do_play_track(guild_id, track_uri, mode, slot_store, web_api_link_manager)
+            content, ephemeral = await do_play_track(
+                guild_id, track_uri, mode, slot_store, web_api_link_manager, librespot
+            )
             await interaction.response.send_message(content, ephemeral=ephemeral)
 
         return callback

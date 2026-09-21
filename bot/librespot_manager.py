@@ -54,16 +54,25 @@ log = logging.getLogger("librespot")
 # Matches librespot's pipe backend output format (also what commands.py's
 # ffmpeg invocation assumes via `-ar 44100 -ac 2`): 16-bit stereo PCM.
 _PCM_BYTES_PER_SECOND = 44100 * 2 * 2
-_DRAIN_TICK_SECONDS = 0.1
+# Tied to _PIPE_BUFFER_SIZE_BYTES below: the idle drain loop has to read at
+# least once per however long the (now much smaller) pipe can hold, or
+# librespot's writer blocks between ticks -- see that constant's comment.
+_DRAIN_TICK_SECONDS = 0.01
 _DRAIN_CHUNK_SIZE = int(_PCM_BYTES_PER_SECOND * _DRAIN_TICK_SECONDS)
 
 # Linux's default pipe buffer (65536 bytes, ~371ms of this audio format) is
 # what Stage A2's diagnostics found sitting as a constant steady-state
 # backlog during normal playback -- not a bug, just the pipe staying full at
-# capacity. Rounded up to a page multiple by the kernel regardless; 4 pages
-# leaves some slack for read-side jitter while cutting worst-case latency
-# roughly 4x.
-_PIPE_BUFFER_SIZE_BYTES = 4096 * 4
+# capacity. Also the leftover backlog that gets read out (as a burst) after
+# an API-driven track change (play_uri/skip/rewind, see
+# LibrespotProcess.flush()) if nobody flushes it first -- ffmpeg reads the
+# old track's queued tail immediately followed by the new track's head, no
+# gap, which is the "distorted, then speeds up" symptom. flush() handles
+# the accidental case; this constant caps the worst case for anything that
+# doesn't call it (or the brief window between a flush and the next byte
+# actually arriving). 4096 (one page) is the practical floor -- F_SETPIPE_SZ
+# rounds up to PAGE_SIZE regardless of what's requested below it.
+_PIPE_BUFFER_SIZE_BYTES = 4096
 
 # How often to sample the pipe's kernel buffer for diagnosing sync drift
 # (bot/commands.py issue: audio lagging/speeding up). FIONREAD works on
@@ -177,6 +186,25 @@ class LibrespotProcess:
                 pass
             except OSError:
                 log.exception("error draining pipe for slot %s", self.slot.name)
+
+    def flush(self) -> None:
+        """Discards whatever's sitting in the pipe right now. Call this
+        right when issuing an API-driven track change (play_uri, skip,
+        rewind) -- Spotify's Connect round-trip for the actual transition
+        takes 100ms+, while this completes in microseconds, so there's
+        ample margin to clear the old track's leftover tail before the new
+        track's audio starts arriving. Doesn't touch _draining's state or
+        the fd itself -- safe to call whether ffmpeg is attached or the
+        idle drain is active."""
+        if self._drain_fd is None:
+            return
+        try:
+            while os.read(self._drain_fd, _DRAIN_CHUNK_SIZE):
+                pass
+        except BlockingIOError:
+            pass  # nothing left queued -- the common case
+        except OSError:
+            log.exception("error flushing pipe for slot %s", self.slot.name)
 
     def pause_draining(self) -> None:
         """Call right before attaching a real (ffmpeg) reader for playback,

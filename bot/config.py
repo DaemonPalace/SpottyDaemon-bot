@@ -10,6 +10,12 @@ load_dotenv()
 # Secrets Manager secret (a single JSON blob) instead of the environment/.env
 # file. .env still supplies the non-secret settings below.
 SECRETS_MANAGER_SECRET_ID = os.environ.get("SECRETS_MANAGER_SECRET_ID")
+# botocore doesn't reliably auto-resolve a region under systemd (no
+# ~/.aws/config for the service user, and EC2 instance metadata isn't
+# always consulted for region the way credentials are) -- pass it
+# explicitly rather than depend on ambient SDK config. Falls back to
+# wherever this project's own AWS resources actually live.
+AWS_REGION = os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-2"))
 
 
 def _load_secrets() -> dict:
@@ -17,7 +23,7 @@ def _load_secrets() -> dict:
         return {}
     import boto3
 
-    client = boto3.client("secretsmanager")
+    client = boto3.client("secretsmanager", region_name=AWS_REGION)
     value = client.get_secret_value(SecretId=SECRETS_MANAGER_SECRET_ID)
     return json.loads(value["SecretString"])
 

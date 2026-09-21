@@ -28,13 +28,12 @@ the same way: it's a message component click, but it also needs an
 directly here too instead of falling into the generic component handling
 below -- see PASTE_URL_BUTTONS.
 
-Message component interactions (button clicks) are deferred one of two
-ways depending on what the eventual response needs to do: Jam's
-Rewind/Play/Pause/Skip ("jam:<action>") as DEFERRED_UPDATE_MESSAGE, since
-the bot's response edits the existing panel message; everything else
-(currently /play's per-track Play/Queue buttons) as
-DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, since those post a fresh ephemeral
-confirmation and leave the original message alone.
+Message component interactions (button clicks) are deferred as
+DEFERRED_UPDATE_MESSAGE -- the bot's eventual response always edits the
+message the button lives on: Jam's Rewind/Play/Pause/Skip
+("jam:<action>") update just the embed, and /play's per-track Play/Queue
+buttons ("play-track:<mode>:<uri>") replace the content and clear the
+buttons entirely, collapsing the picker to a one-line confirmation.
 
 Autocomplete interactions (/play's live search-as-you-type) can't be
 deferred at all -- Discord requires an immediate response -- and this
@@ -228,13 +227,11 @@ def handler(event, context):
         if custom_id in PASTE_URL_BUTTONS:
             modal_custom_id, title = PASTE_URL_BUTTONS[custom_id]
             return _paste_url_modal_response(modal_custom_id, title)
-        if custom_id.startswith("jam:"):
-            # Jam's transport buttons -- the eventual response edits the
-            # message the button lives on, not a new one.
-            return _relay(body, response_type=RESPONSE_DEFERRED_UPDATE_MESSAGE)
-        # Everything else (e.g. /play's per-track Play/Queue buttons) posts
-        # a fresh response instead of editing the message it came from.
-        return _relay(body, response_type=RESPONSE_DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE)
+        # Every other button (jam's transport buttons, /play's per-track
+        # Play/Queue buttons) edits the message it lives on rather than
+        # posting a new one -- jam updates just the embed; play-track
+        # replaces the content and clears the buttons entirely.
+        return _relay(body, response_type=RESPONSE_DEFERRED_UPDATE_MESSAGE)
 
     # Everything else that reaches here (disconnect, link-finish,
     # link-web-api-finish, delete-slot, jam, play, and every MODAL_SUBMIT)

@@ -1,6 +1,9 @@
 """Discord-native Jam: a live-updating control panel embed (now playing +
 next 5 queued tracks) with Rewind/Play/Pause/Skip buttons, posted to
-whichever channel /jam was run in. Replaces the old web Jam link.
+whichever channel /jam was run in. Reposted (deleted + resent, see
+repost()) after a play-track action so it stays near the bottom of the
+channel instead of getting buried under other activity. Replaces the old
+web Jam link.
 
 One session per guild, mirroring commands.py's _active_sessions model.
 Editing the message every REFRESH_INTERVAL_SECONDS is well under Discord's
@@ -91,6 +94,27 @@ class JamManager:
         message = await channel.send(embed=embed, view=JamView(self))
         task = asyncio.create_task(self._refresh_loop(guild.id))
         self._sessions[guild.id] = JamSession(message, slot_index, task)
+
+    async def repost(self, guild_id: int) -> None:
+        """Deletes the current panel message and resends it as a fresh one
+        in the same channel, so it doesn't get buried by other channel
+        activity (e.g. the "used /play" line every /play invocation adds,
+        even though its own reply is ephemeral) -- called after a
+        play-track action completes. Keeps the same refresh task/session,
+        just repoints it at the new message."""
+        session = self._sessions.get(guild_id)
+        if session is None:
+            return
+        channel = session.message.channel
+        embed = await self.build_embed(session.slot_index)
+        try:
+            await session.message.delete()
+        except discord.HTTPException:
+            pass  # already gone -- fine, we're replacing it anyway
+        try:
+            session.message = await channel.send(embed=embed, view=JamView(self))
+        except discord.HTTPException:
+            log.exception("failed to repost jam panel for guild %s", guild_id)
 
     async def stop_jam(self, guild_id: int) -> None:
         session = self._sessions.pop(guild_id, None)

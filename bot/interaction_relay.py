@@ -21,13 +21,13 @@ same way: Lambda answers that button click directly with a MODAL
 submission comes back here as another MODAL_SUBMIT.
 
 Message component interactions (type == MESSAGE_COMPONENT, i.e. a button
-click) come in two flavors, and Lambda defers them differently (see its
-own module docstring): Jam's Rewind/Play/Pause/Skip ("jam:<action>") as
-DEFERRED_UPDATE_MESSAGE, since the response edits the existing panel
-message; /play's per-track Play/Queue buttons ("play-track:<mode>:<uri>")
-as DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE, since the response is a fresh
-ephemeral confirmation that leaves the results message alone (so more than
-one track can be picked from the same results).
+click) are all deferred by Lambda as DEFERRED_UPDATE_MESSAGE, so the real
+response always edits the message the button lives on via the webhook
+API's @original endpoint: Jam's Rewind/Play/Pause/Skip ("jam:<action>")
+update just the embed; /play's per-track Play/Queue buttons
+("play-track:<mode>:<uri>") replace the content and clear the buttons
+entirely, collapsing the picker to a one-line confirmation once a track's
+been chosen.
 
 Autocomplete never reaches here at all -- Discord doesn't support
 deferring an autocomplete response, so Lambda always answers those with an
@@ -98,22 +98,24 @@ def _link_start_components(authorize_url: str, paste_flow: str) -> list[dict]:
 
 
 def _track_result_components(results: list[dict]) -> list[dict]:
-    """Two tracks per row (Play + Queue buttons each) -- 5 tracks max fits
-    in 3 rows, well under Discord's 5-row cap."""
+    """One row per track (up to 5, Discord's row cap) -- the Play button's
+    own label is the track name, so the message needs no separate text
+    lines at all. Clicking either button collapses the whole message (see
+    InteractionRelay._run_component)."""
     rows = []
-    row = {"type": 1, "components": []}
     for track in results[:5]:
         uri = track["uri"]
-        label = track["name"][:60]
-        row["components"].append(
-            {"type": 2, "style": 3, "label": f"▶ {label}"[:80], "custom_id": f"play-track:play_now:{uri}"}
+        artists = ", ".join(a["name"] for a in track.get("artists", []))
+        label = f"{track['name']} — {artists}"[:80]
+        rows.append(
+            {
+                "type": 1,
+                "components": [
+                    {"type": 2, "style": 3, "label": label, "custom_id": f"play-track:play_now:{uri}"},
+                    {"type": 2, "style": 2, "label": "➕ Queue", "custom_id": f"play-track:queue:{uri}"},
+                ],
+            }
         )
-        row["components"].append({"type": 2, "style": 2, "label": "➕ Queue", "custom_id": f"play-track:queue:{uri}"})
-        if len(row["components"]) >= 4:
-            rows.append(row)
-            row = {"type": 1, "components": []}
-    if row["components"]:
-        rows.append(row)
     return rows
 
 
@@ -251,10 +253,10 @@ class InteractionRelay:
         return content, ephemeral, None
 
     async def _run_play(self, interaction: dict, guild: discord.Guild, query: str) -> None:
-        """Sends its own followup(s) rather than returning through the
-        single-reply path: one ephemeral message per track (each with its
-        own Play/Queue buttons directly below it), not one message with
-        every track's buttons crammed below all of them."""
+        """Sends its own followup rather than returning through the
+        single-reply path: one message, buttons only, one row per track
+        (the Play button's label is the track name -- no separate text
+        needed)."""
         results, error = await do_search_tracks(guild.id, query, self.store, self.web_api_link_manager)
         if error is not None:
             content, ephemeral = error
@@ -263,10 +265,7 @@ class InteractionRelay:
         if not results:
             await self._followup(interaction, f"No tracks found for '{query}'.", True)
             return
-        for i, track in enumerate(results, 1):
-            artists = ", ".join(a["name"] for a in track.get("artists", []))
-            content = f"{i}. **{track['name']}** — {artists}"
-            await self._followup(interaction, content, True, components=_track_result_components([track]))
+        await self._followup(interaction, None, True, components=_track_result_components(results))
 
     async def _run_jam(self, interaction: dict, guild: discord.Guild) -> tuple[str, bool]:
         slot_index, error = resolve_jam_slot(guild.id, self.store)
@@ -317,9 +316,13 @@ class InteractionRelay:
     async def _run_component(self, interaction: dict, guild: discord.Guild) -> None:
         """Handles a relayed button click. Unlike _run_command, this sends
         its own response rather than returning (content, ephemeral) for
-        _followup to post -- jam's buttons edit the original message
-        (Lambda deferred those as DEFERRED_UPDATE_MESSAGE); play-track's
-        buttons post a fresh ephemeral confirmation instead."""
+        _followup to post -- both button families edit the original
+        message (Lambda defers every component click as
+        DEFERRED_UPDATE_MESSAGE): jam's buttons only touch the embed
+        (leaving its own buttons in place); play-track's buttons replace
+        the content and clear the buttons entirely, so the picker
+        collapses to a one-line confirmation instead of leaving a message
+        full of now-stale buttons behind."""
         custom_id = interaction["data"]["custom_id"]
         if custom_id.startswith("jam:"):
             action = custom_id.split(":", 1)[1]
@@ -328,23 +331,26 @@ class InteractionRelay:
                 return  # panel's session already ended -- nothing to update
             await self.jam_manager.apply_action(slot_index, action)
             embed = await self.jam_manager.build_embed(slot_index)
-            await self._edit_original(interaction, embed)
+            await self._edit_original_embed(interaction, embed)
             return
         if custom_id.startswith("play-track:"):
             _, mode, track_uri = custom_id.split(":", 2)
-            content, ephemeral = await do_play_track(
+            content, _ephemeral = await do_play_track(
                 guild.id, track_uri, mode, self.store, self.web_api_link_manager, self.librespot
             )
-            await self._followup(interaction, content, ephemeral)
+            await self._edit_original_clear(interaction, content)
+            await self.jam_manager.repost(guild.id)
             return
         log.warning("unknown component custom_id: %s", custom_id)
 
     async def _followup(
-        self, interaction: dict, content: str, ephemeral: bool, components: list[dict] | None = None
+        self, interaction: dict, content: str | None, ephemeral: bool, components: list[dict] | None = None
     ) -> None:
         application_id = interaction["application_id"]
         token = interaction["token"]
-        payload = {"content": content}
+        payload = {}
+        if content:
+            payload["content"] = content
         if ephemeral:
             payload["flags"] = EPHEMERAL
         if components:
@@ -354,10 +360,23 @@ class InteractionRelay:
             if resp.status >= 300:
                 log.error("followup send failed (%s): %s", resp.status, await resp.text())
 
-    async def _edit_original(self, interaction: dict, embed: discord.Embed) -> None:
+    async def _edit_original_embed(self, interaction: dict, embed: discord.Embed) -> None:
+        """Used by jam's buttons: only touches the embed, leaving whatever
+        components (the buttons themselves) are already on the message
+        untouched -- PATCH .../messages/@original is a partial update, an
+        omitted field means "leave as-is"."""
+        await self._patch_original(interaction, {"embeds": [embed.to_dict()]})
+
+    async def _edit_original_clear(self, interaction: dict, content: str) -> None:
+        """Used by play-track's buttons: replaces the content and removes
+        the buttons entirely, collapsing the picker to a plain
+        confirmation once a track's been chosen."""
+        await self._patch_original(interaction, {"content": content, "components": []})
+
+    async def _patch_original(self, interaction: dict, payload: dict) -> None:
         application_id = interaction["application_id"]
         token = interaction["token"]
         url = f"{DISCORD_API}/webhooks/{application_id}/{token}/messages/@original"
-        async with self._http.patch(url, json={"embeds": [embed.to_dict()]}) as resp:
+        async with self._http.patch(url, json=payload) as resp:
             if resp.status >= 300:
                 log.error("edit-original failed (%s): %s", resp.status, await resp.text())

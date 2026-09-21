@@ -187,24 +187,28 @@ async def jam(interaction: discord.Interaction):
 
 
 class TrackResultsView(discord.ui.View):
-    """Up to 5 tracks, each with its own Play-now/Queue buttons -- replaces
-    the old autocomplete-and-guess-the-top-hit design (autocomplete can't
-    be relied on to have even run, see interaction_relay.py's module
-    docstring). Explicit "play-track:<mode>:<uri>" custom_ids so a relayed
+    """One message, buttons only -- no separate text lines, since the Play
+    button's own label IS the track name. One row per track (up to 5,
+    Discord's row cap) so each track's Play/Queue pair stays visually
+    grouped without needing text alignment. Clicking either button
+    collapses the whole message to a one-line confirmation with no
+    buttons, rather than leaving a picker with dead/used buttons sitting
+    around. Explicit "play-track:<mode>:<uri>" custom_ids so a relayed
     click can be dispatched the same way (interaction_relay.py's
     _run_component)."""
 
     def __init__(self, guild_id: int, results: list[dict]):
         super().__init__(timeout=120)
-        for track in results[:5]:
+        for i, track in enumerate(results[:5]):
             uri = track["uri"]
-            label = track["name"][:60]
+            artists = ", ".join(a["name"] for a in track.get("artists", []))
+            label = f"{track['name']} — {artists}"[:80]
             play_button = discord.ui.Button(
-                label=f"▶ {label}", style=discord.ButtonStyle.success, custom_id=f"play-track:play_now:{uri}"
+                label=label, style=discord.ButtonStyle.success, custom_id=f"play-track:play_now:{uri}", row=i
             )
             play_button.callback = self._make_callback(guild_id, uri, "play_now")
             queue_button = discord.ui.Button(
-                label="➕ Queue", style=discord.ButtonStyle.secondary, custom_id=f"play-track:queue:{uri}"
+                label="➕ Queue", style=discord.ButtonStyle.secondary, custom_id=f"play-track:queue:{uri}", row=i
             )
             queue_button.callback = self._make_callback(guild_id, uri, "queue")
             self.add_item(play_button)
@@ -215,7 +219,8 @@ class TrackResultsView(discord.ui.View):
             content, ephemeral = await do_play_track(
                 guild_id, track_uri, mode, slot_store, web_api_link_manager, librespot
             )
-            await interaction.response.send_message(content, ephemeral=ephemeral)
+            await interaction.response.edit_message(content=content, view=None)
+            await jam_manager.repost(guild_id)
 
         return callback
 
@@ -233,15 +238,7 @@ async def play(interaction: discord.Interaction, query: str):
     if not results:
         await interaction.followup.send(f"No tracks found for '{query}'.", ephemeral=True)
         return
-    # One message per track (each with its own Play/Queue buttons directly
-    # below it) rather than one message with every track's buttons crammed
-    # below all of them.
-    for i, track in enumerate(results, 1):
-        artists = ", ".join(a["name"] for a in track.get("artists", []))
-        content = f"{i}. **{track['name']}** — {artists}"
-        await interaction.followup.send(
-            content, view=TrackResultsView(interaction.guild.id, [track]), ephemeral=True
-        )
+    await interaction.followup.send(view=TrackResultsView(interaction.guild.id, results), ephemeral=True)
 
 
 @tree.command(name="link", description="Claim a free Spotify slot and link your own Spotify account")

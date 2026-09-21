@@ -431,8 +431,21 @@ async def do_play_track(
             # track is playing -- add_to_queue doesn't cause an immediate
             # transition, so it's left alone.
             flush_slot_pipe(slot_index, store, librespot)
-            await spotify_player_api.play_uri(token, track_uri)
+            device_id = await _resolve_device_id(token, slot_index, librespot)
+            await spotify_player_api.play_uri(token, track_uri, device_id=device_id)
             return "Playing now.", True
+
+        # Spotify's queue-add endpoint can only append to an *existing*
+        # active session -- it can't start playback from nothing. If the
+        # slot's idle, queueing a track would silently do nothing useful,
+        # so play it directly instead.
+        now_playing = await spotify_player_api.get_now_playing(token)
+        if not now_playing or not now_playing.get("is_playing"):
+            flush_slot_pipe(slot_index, store, librespot)
+            device_id = await _resolve_device_id(token, slot_index, librespot)
+            await spotify_player_api.play_uri(token, track_uri, device_id=device_id)
+            return "Nothing was playing, so playing this now instead.", True
+
         await spotify_player_api.add_to_queue(token, track_uri)
         return "Added to queue.", True
     except Exception:
@@ -442,6 +455,19 @@ async def do_play_track(
         # stuck on "thinking..." forever (interaction_relay.py's outer
         # handler logs and swallows it with no followup sent at all).
         return "That didn't work -- is Spotify Connect active on this slot? Try /connect first.", True
+
+
+async def _resolve_device_id(token: str, slot_index: int, librespot: LibrespotManager) -> str | None:
+    """Best-effort: play_uri still works without a device_id once some
+    device is already active, so a lookup failure here shouldn't block
+    playback -- it only makes cold activation faster/more reliable."""
+    slot = librespot.slot_by_index(slot_index)
+    if slot is None:
+        return None
+    try:
+        return await spotify_player_api.find_device_id(token, slot.name)
+    except Exception:
+        return None
 
 
 def active_sessions_snapshot() -> list[dict]:

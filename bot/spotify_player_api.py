@@ -123,12 +123,43 @@ async def play(access_token: str) -> None:
     await _player_put(access_token, "/me/player/play")
 
 
-async def play_uri(access_token: str, track_uri: str) -> None:
+async def play_uri(access_token: str, track_uri: str, device_id: str | None = None) -> None:
     """Plays a specific track immediately, replacing whatever's active --
     used by /play's "Play now" mode. Unlike play()'s bare resume, this needs
     a JSON body naming the track (Spotify's "start/resume playback" endpoint
-    doubles as both)."""
-    await _player_put(access_token, "/me/player/play", json_body={"uris": [track_uri]})
+    doubles as both). Pass device_id (see find_device_id) when the slot
+    might not already be Spotify's "currently active device" -- without
+    it, Spotify has to implicitly resolve one, which doesn't exist yet the
+    very first time a slot plays anything (or any time it's gone fully
+    idle) and makes that activation slower and audibly rougher than a
+    warm transition between two already-active tracks."""
+    params = {"device_id": device_id} if device_id else None
+    await _player_put(access_token, "/me/player/play", params=params, json_body={"uris": [track_uri]})
+
+
+async def get_devices(access_token: str) -> list[dict]:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{API_BASE}/me/player/devices",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status >= 300:
+                raise RuntimeError(f"get_devices failed ({resp.status}): {await resp.text()}")
+            body = await resp.json()
+            return body.get("devices", [])
+
+
+async def find_device_id(access_token: str, device_name: str) -> str | None:
+    """Resolves librespot's Spotify Connect device_id by the name it
+    registered with (SpotifySlot.name, e.g. "discord-bot-1", not the
+    slot's friendly Discord-facing name) -- see play_uri for why passing
+    this explicitly matters."""
+    devices = await get_devices(access_token)
+    for device in devices:
+        if device.get("name") == device_name:
+            return device.get("id")
+    return None
 
 
 async def pause(access_token: str) -> None:

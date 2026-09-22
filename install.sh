@@ -108,10 +108,12 @@ if ! command -v rustup >/dev/null 2>&1; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 fi
 source "$HOME/.cargo/env"
-# rustup being present doesn't mean a toolchain is: an earlier run that got
-# OOM-killed mid-unpack (see the swap step above) can leave a `cargo` shim
-# on PATH with no default configured. `rustup default stable` is a cheap,
-# idempotent no-op when one's already set.
+# rustup being present doesn't mean a working toolchain is: an earlier run
+# that got OOM-killed mid-unpack (see the swap step above) can leave the
+# stable toolchain partial -- missing cargo, or no default configured at
+# all. --force repairs a partial toolchain in place; a no-op if it's
+# already complete.
+rustup toolchain install stable --force
 rustup default stable
 
 echo "== build librespot (in \$HOME, not /tmp -- /tmp may be tmpfs) =="

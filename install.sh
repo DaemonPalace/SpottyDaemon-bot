@@ -110,10 +110,15 @@ fi
 source "$HOME/.cargo/env"
 # rustup being present doesn't mean a working toolchain is: an earlier run
 # that got OOM-killed mid-unpack (see the swap step above) can leave the
-# stable toolchain partial -- missing cargo, or no default configured at
-# all. --force repairs a partial toolchain in place; a no-op if it's
-# already complete.
-rustup toolchain install stable --force
+# stable toolchain partial -- missing cargo or rustc, or no default
+# configured at all. `--force` is NOT enough to repair this: it compares
+# manifest versions and reports "unchanged" without checking whether the
+# component files actually exist, so a partial toolchain stays partial.
+# Actually verify it works, and nuke + reinstall from scratch if not.
+if ! rustc --version >/dev/null 2>&1 || ! cargo --version >/dev/null 2>&1; then
+  rustup toolchain uninstall stable
+  rustup toolchain install stable
+fi
 rustup default stable
 
 echo "== build librespot (in \$HOME, not /tmp -- /tmp may be tmpfs) =="

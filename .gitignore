@@ -7,3 +7,10 @@ lambda/wake_sleep.zip
 frontend/node_modules/
 frontend/dist/
 admin.json
+
+# Claude Code tooling, not product code
+CLAUDE.md
+.agents/
+.claude/
+graphify-out/
+skills-lock.json

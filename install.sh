@@ -74,6 +74,21 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
 fi
 ffmpeg -version
 
+echo "== swap (low-RAM boxes OOM-kill rustup/cargo without it) =="
+# ponytail: swapfile size/threshold fixed at 2GiB/2GiB rather than scaled to
+# available disk -- fine for the VPS/EC2-micro sizes this targets, revisit
+# if that stops holding.
+MEM_KB="$(awk '/MemTotal/{print $2}' /proc/meminfo)"
+SWAP_KB="$(awk '/SwapTotal/{print $2}' /proc/meminfo)"
+if [ "$MEM_KB" -lt 2097152 ] && [ "$SWAP_KB" -lt 1048576 ] && [ ! -f /swapfile ]; then
+  echo "-> ${MEM_KB}KiB RAM, ${SWAP_KB}KiB swap -- adding a 2GiB swapfile"
+  sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile
+  sudo swapon /swapfile
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+fi
+
 echo "== rust toolchain =="
 if ! command -v cargo >/dev/null 2>&1; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y

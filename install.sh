@@ -75,18 +75,32 @@ fi
 ffmpeg -version
 
 echo "== swap (low-RAM boxes OOM-kill rustup/cargo without it) =="
-# ponytail: swapfile size/threshold fixed at 2GiB/2GiB rather than scaled to
-# available disk -- fine for the VPS/EC2-micro sizes this targets, revisit
-# if that stops holding.
+# Best-effort: sized to whatever's actually free (capped at 2GiB), and never
+# fatal to the rest of the install -- a box with no room for swap either
+# still might have enough RAM, or the user's already been warned below and
+# can go fix disk space and re-run.
 MEM_KB="$(awk '/MemTotal/{print $2}' /proc/meminfo)"
 SWAP_KB="$(awk '/SwapTotal/{print $2}' /proc/meminfo)"
 if [ "$MEM_KB" -lt 2097152 ] && [ "$SWAP_KB" -lt 1048576 ] && [ ! -f /swapfile ]; then
-  echo "-> ${MEM_KB}KiB RAM, ${SWAP_KB}KiB swap -- adding a 2GiB swapfile"
-  sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
-  sudo chmod 600 /swapfile
-  sudo mkswap /swapfile
-  sudo swapon /swapfile
-  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+  AVAIL_KB="$(df -k --output=avail / | tail -1)"
+  SWAP_MB=$(( AVAIL_KB / 1024 - 512 ))
+  [ "$SWAP_MB" -gt 2048 ] && SWAP_MB=2048
+  if [ "$SWAP_MB" -lt 256 ]; then
+    echo "-> only ${AVAIL_KB}KiB free on / -- skipping swap, not enough room."
+    echo "   rustup/cargo below may OOM-kill without it. Free up disk and re-run,"
+    echo "   or add swap by hand once there's space."
+  else
+    echo "-> ${MEM_KB}KiB RAM, ${SWAP_KB}KiB swap, ${AVAIL_KB}KiB free on / -- adding a ${SWAP_MB}MiB swapfile"
+    if sudo fallocate -l "${SWAP_MB}M" /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count="$SWAP_MB"; then
+      sudo chmod 600 /swapfile
+      sudo mkswap /swapfile
+      sudo swapon /swapfile
+      grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+    else
+      echo "-> swapfile creation failed, continuing without it" >&2
+      sudo rm -f /swapfile
+    fi
+  fi
 fi
 
 echo "== rust toolchain =="

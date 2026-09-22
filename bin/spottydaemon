@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Thin wrapper: locates this install's venv + supervisor/cli.py relative to
+# this script's own path (works whether it's run in place or symlinked into
+# /usr/local/bin by install.sh, which is how it normally gets on PATH) and
+# execs it.
+set -euo pipefail
+
+resolve_self() {
+  local src="${BASH_SOURCE[0]}"
+  while [ -L "$src" ]; do
+    local dir
+    dir="$(cd -P "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ $src == /* ]] || src="$dir/$src"
+  done
+  cd -P "$(dirname "$src")" && pwd
+}
+
+BIN_DIR="$(resolve_self)"
+APP_DIR="$(cd "$BIN_DIR/.." && pwd)"
+
+exec "$APP_DIR/venv/bin/python" "$APP_DIR/supervisor/cli.py" "$@"

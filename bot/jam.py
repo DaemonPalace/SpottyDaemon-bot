@@ -33,6 +33,7 @@ log = logging.getLogger("jam")
 
 REFRESH_INTERVAL_SECONDS = 5
 QUEUE_PREVIEW_SIZE = 5
+DASHBOARD_URL = "https://music.daemonpalace.space"
 
 
 class JamSession:
@@ -200,6 +201,7 @@ class JamView(discord.ui.View):
     def __init__(self, manager: JamManager):
         super().__init__(timeout=None)
         self.manager = manager
+        self.add_item(discord.ui.Button(label="Open dashboard", style=discord.ButtonStyle.link, url=DASHBOARD_URL))
 
     @discord.ui.button(label="Rewind", style=discord.ButtonStyle.secondary, emoji="⏮", custom_id="jam:rewind")
     async def rewind(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { AlbumArt, trackArtists } from "./Player";
+import { TrackThumb, trackArtists } from "./Player";
 
-export default function RecentlyPlayedRow({ name, getRecentlyPlayed, onAdd, relinkPrompt }) {
+export default function RecentlyPlayedRow({ name, getRecentlyPlayed, onAdd, onPlayNow, relinkPrompt }) {
   const [state, setState] = useState({ status: "loading", tracks: [] });
   const [addedUri, setAddedUri] = useState(null);
 
@@ -35,6 +35,14 @@ export default function RecentlyPlayedRow({ name, getRecentlyPlayed, onAdd, reli
     }
   }
 
+  async function handlePlayNow(track) {
+    try {
+      await onPlayNow(track.uri);
+    } catch {
+      // swallow -- errors surface via the section it's shown in
+    }
+  }
+
   if (state.status === "loading" || state.status === "error" || state.tracks.length === 0) {
     if (state.status === "needs_reauth") {
       return (
@@ -52,12 +60,32 @@ export default function RecentlyPlayedRow({ name, getRecentlyPlayed, onAdd, reli
       <h3>Recently played</h3>
       <div className="recent-row">
         {state.tracks.slice(0, 12).map((track, i) => (
-          <button key={`${track.uri}-${i}`} className="recent-tile" onClick={() => handleAdd(track)}>
-            <AlbumArt images={track.album?.images} alt={track.album?.name} size="md" />
+          <div
+            key={`${track.uri}-${i}`}
+            className="recent-tile"
+            role="button"
+            tabIndex={0}
+            onClick={() => handleAdd(track)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                handleAdd(track);
+              }
+            }}
+          >
+            <TrackThumb
+              images={track.album?.images}
+              alt={track.album?.name}
+              size="md"
+              onPlay={(e) => {
+                e.stopPropagation();
+                handlePlayNow(track);
+              }}
+            />
             <span className="album-tile-name">{track.name}</span>
             <span className="album-tile-artist">{trackArtists(track)}</span>
             {addedUri === track.uri && <span className="badge running recent-added-badge">Added</span>}
-          </button>
+          </div>
         ))}
       </div>
     </section>

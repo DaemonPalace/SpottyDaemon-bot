@@ -342,6 +342,34 @@ button:disabled {
   white-space: nowrap;
 }
 
+.track-thumb {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+}
+
+.track-thumb-play {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--bg);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+
+.track-play-now {
+  padding: 0.4rem;
+  border-radius: 50%;
+  display: flex;
+}
+
 .track-duration {
   color: var(--muted);
   font-size: 0.8rem;
@@ -602,9 +630,10 @@ button:disabled {
 /* Dashboard (Spotify-style) */
 
 .dashboard {
-  min-height: 100svh;
+  height: 100svh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .dashboard-header {

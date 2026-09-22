@@ -137,6 +137,12 @@ async def play_uri(access_token: str, track_uri: str) -> None:
     await _player_put(access_token, "/me/player/play", json_body={"uris": [track_uri]})
 
 
+async def play_context(access_token: str, context_uri: str) -> None:
+    """Plays a whole context (e.g. a playlist) start to finish, replacing
+    whatever's active -- the play-a-playlist counterpart to play_uri."""
+    await _player_put(access_token, "/me/player/play", json_body={"context_uri": context_uri})
+
+
 async def transfer_playback(access_token: str, device_id: str) -> None:
     """Makes device_id the active Spotify Connect device without asking it
     to play anything specific. Spotify's own documented way to activate a
@@ -255,6 +261,24 @@ async def get_playlist(access_token: str, playlist_id: str) -> dict:
             if resp.status >= 300:
                 raise RuntimeError(f"get_playlist failed ({resp.status}): {await resp.text()}")
             return await resp.json()
+
+
+async def get_playlist_track_count(access_token: str, playlist_id: str) -> int:
+    """GET /me/playlists (get_playlists above) always reports tracks.total
+    as 0 -- a longstanding Spotify API bug -- but the single-playlist
+    endpoint reports it correctly, so the frontend fetches this per tile
+    to fix up the grid's track counts."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{API_BASE}/playlists/{playlist_id}",
+            params={"fields": "tracks.total"},
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status >= 300:
+                raise RuntimeError(f"get_playlist_track_count failed ({resp.status}): {await resp.text()}")
+            body = await resp.json()
+            return (body.get("tracks") or {}).get("total", 0)
 
 
 async def get_current_user_profile(access_token: str) -> dict | None:

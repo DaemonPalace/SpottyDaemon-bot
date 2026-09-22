@@ -50,6 +50,8 @@ export const updateSlotSettings = (name, { currentPassword, newName, newPassword
 // bot/api.py's _player_state
 export const getPlayerState = (name) => request("GET", `/api/slots/${encodeURIComponent(name)}/player-state`);
 export const addToQueue = (name, uri) => request("POST", `/api/slots/${encodeURIComponent(name)}/queue`, { uri });
+export const playTrack = (name, uri) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/player/play-track`, { uri });
 export const searchTracks = (name, q) =>
   request("GET", `/api/slots/${encodeURIComponent(name)}/search?q=${encodeURIComponent(q)}`);
 export const playPlayback = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/player/play`, {});
@@ -70,3 +72,9 @@ export const getRecentlyPlayed = (name) => request("GET", `/api/slots/${encodeUR
 export const getPlaylists = (name) => request("GET", `/api/slots/${encodeURIComponent(name)}/playlists`);
 export const getPlaylist = (name, playlistId) =>
   request("GET", `/api/slots/${encodeURIComponent(name)}/playlists/${encodeURIComponent(playlistId)}`);
+export const getPlaylistTrackCount = (name, playlistId) =>
+  request("GET", `/api/slots/${encodeURIComponent(name)}/playlists/${encodeURIComponent(playlistId)}/track-count`);
+export const playPlaylist = (name, playlistId) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/playlists/${encodeURIComponent(playlistId)}/play`, {});
+export const queuePlaylist = (name, playlistId) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/playlists/${encodeURIComponent(playlistId)}/queue-all`, {});

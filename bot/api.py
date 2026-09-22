@@ -87,6 +87,10 @@ class DiagnosticsApi:
         app.router.add_get("/api/slots/{name}/recently-played", self._recently_played)
         app.router.add_get("/api/slots/{name}/playlists", self._playlists)
         app.router.add_get("/api/slots/{name}/playlists/{playlist_id}", self._playlist_detail)
+        app.router.add_get("/api/slots/{name}/playlists/{playlist_id}/track-count", self._playlist_track_count)
+        app.router.add_post("/api/slots/{name}/playlists/{playlist_id}/play", self._playlist_play)
+        app.router.add_post("/api/slots/{name}/playlists/{playlist_id}/queue-all", self._playlist_queue_all)
+        app.router.add_post("/api/slots/{name}/player/play-track", self._player_play_track)
         app.router.add_post("/api/slots/{name}/player/play", self._player_play)
         app.router.add_post("/api/slots/{name}/player/pause", self._player_pause)
         app.router.add_post("/api/slots/{name}/player/next", self._player_next)
@@ -361,6 +365,38 @@ class DiagnosticsApi:
         token = await self._get_slot_access_token(request.match_info["name"])
         playlist = await spotify_player_api.get_playlist(token, request.match_info["playlist_id"])
         return web.json_response(playlist)
+
+    async def _playlist_track_count(self, request: web.Request) -> web.Response:
+        """/me/playlists (the _playlists route above) always reports 0 for
+        tracks.total -- a Spotify API bug -- so the grid fetches the real
+        count per tile from here instead, off the single-playlist endpoint."""
+        token = await self._get_slot_access_token(request.match_info["name"])
+        total = await spotify_player_api.get_playlist_track_count(token, request.match_info["playlist_id"])
+        return web.json_response({"total": total})
+
+    async def _playlist_play(self, request: web.Request) -> web.Response:
+        token = await self._get_slot_access_token(request.match_info["name"])
+        await spotify_player_api.play_context(token, f"spotify:playlist:{request.match_info['playlist_id']}")
+        return web.json_response({"ok": True})
+
+    async def _playlist_queue_all(self, request: web.Request) -> web.Response:
+        """Spotify's queue endpoint only takes one track at a time -- no
+        batch/context form -- so a whole-playlist queue is just this loop."""
+        token = await self._get_slot_access_token(request.match_info["name"])
+        playlist = await spotify_player_api.get_playlist(token, request.match_info["playlist_id"])
+        tracks = [item["track"] for item in playlist.get("tracks", {}).get("items", []) if item.get("track")]
+        for track in tracks:
+            await spotify_player_api.add_to_queue(token, track["uri"])
+        return web.json_response({"queued": len(tracks)})
+
+    async def _player_play_track(self, request: web.Request) -> web.Response:
+        token = await self._get_slot_access_token(request.match_info["name"])
+        body = await request.json()
+        uri = body.get("uri", "")
+        if not uri:
+            raise web.HTTPBadRequest(text="uri is required")
+        await spotify_player_api.play_uri(token, uri)
+        return web.json_response({"ok": True})
 
     async def _player_play(self, request: web.Request) -> web.Response:
         token = await self._get_slot_access_token(request.match_info["name"])

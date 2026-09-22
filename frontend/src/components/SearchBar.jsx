@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { AlbumArt, trackArtists } from "./Player";
+import { TrackThumb, trackArtists } from "./Player";
 
 /** Top search bar with a results dropdown, styled after Spotify's header
  * search rather than TrackSearch's inline card (same search()/onAdd()
  * contract, just a different shell). */
-export default function SearchBar({ search, onAdd }) {
+export default function SearchBar({ search, onAdd, onPlayNow }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [open, setOpen] = useState(false);
@@ -56,6 +56,15 @@ export default function SearchBar({ search, onAdd }) {
     }
   }
 
+  async function handlePlayNow(track) {
+    setError(null);
+    try {
+      await onPlayNow(track.uri);
+    } catch {
+      setError("Couldn't play that -- make sure the bot is connected to a voice channel first.");
+    }
+  }
+
   return (
     <div className="search-bar" ref={boxRef}>
       <input
@@ -71,7 +80,12 @@ export default function SearchBar({ search, onAdd }) {
           {error && <p className="error">{error}</p>}
           {results.slice(0, 8).map((track) => (
             <div key={track.uri} className="track-row">
-              <AlbumArt images={track.album?.images} alt={track.album?.name} size="sm" />
+              <TrackThumb
+                images={track.album?.images}
+                alt={track.album?.name}
+                size="sm"
+                onPlay={() => handlePlayNow(track)}
+              />
               <div className="track-info">
                 <span className="track-name">{track.name}</span>
                 <span className="track-artist">{trackArtists(track)}</span>

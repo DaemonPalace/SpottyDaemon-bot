@@ -33,6 +33,25 @@ export function AlbumArt({ images, alt, size = "md", glow = false }) {
   return <img className={className} src={url} alt={alt} loading="lazy" />;
 }
 
+/** AlbumArt with a small corner play button overlaid bottom-right --
+ * "play this now" (play_uri), distinct from the row's own onAdd
+ * ("queue this"). onPlay is omitted where playing now doesn't make sense
+ * (e.g. the queue list). */
+export function TrackThumb({ images, alt, size = "sm", onPlay }) {
+  return (
+    <div className="track-thumb">
+      <AlbumArt images={images} alt={alt} size={size} />
+      {onPlay && (
+        <button className="track-thumb-play" onClick={onPlay} aria-label="Play now" title="Play now">
+          <svg viewBox="0 0 24 24" width="60%" height="60%" fill="currentColor">
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function NowPlayingHero({ nowPlaying }) {
   const item = nowPlaying?.item;
 
@@ -98,7 +117,7 @@ export function QueueList({ queue }) {
   );
 }
 
-export function TrackSearch({ search, onAdd }) {
+export function TrackSearch({ search, onAdd, onPlayNow }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -143,6 +162,15 @@ export function TrackSearch({ search, onAdd }) {
     }
   }
 
+  async function handlePlayNow(track) {
+    setError(null);
+    try {
+      await onPlayNow(track.uri);
+    } catch {
+      setError("Couldn't play that -- make sure the bot is connected to a voice channel first.");
+    }
+  }
+
   return (
     <div className="card">
       <h3>Search</h3>
@@ -159,7 +187,12 @@ export function TrackSearch({ search, onAdd }) {
         <ul className="track-list">
           {results.slice(0, 8).map((track) => (
             <li key={track.uri} className="track-row">
-              <AlbumArt images={track.album?.images} alt={track.album?.name} size="sm" />
+              <TrackThumb
+                images={track.album?.images}
+                alt={track.album?.name}
+                size="sm"
+                onPlay={() => handlePlayNow(track)}
+              />
               <div className="track-info">
                 <span className="track-name">{track.name}</span>
                 <span className="track-artist">{trackArtists(track)}</span>
@@ -175,7 +208,7 @@ export function TrackSearch({ search, onAdd }) {
   );
 }
 
-export function AlbumLibrary({ name, getAlbums, getAlbumDetail, onAdd, relinkPrompt }) {
+export function AlbumLibrary({ name, getAlbums, getAlbumDetail, onAdd, onPlayNow, relinkPrompt }) {
   const [state, setState] = useState({ status: "loading", albums: [] });
   const [selected, setSelected] = useState(null); // { album, tracks } or null
   const [addedUri, setAddedUri] = useState(null);
@@ -215,6 +248,15 @@ export function AlbumLibrary({ name, getAlbums, getAlbumDetail, onAdd, relinkPro
       setTimeout(() => setAddedUri((current) => (current === track.uri ? null : current)), 1500);
     } catch {
       setAddError("Couldn't add that -- make sure the bot is connected to a voice channel first.");
+    }
+  }
+
+  async function handlePlayNow(track) {
+    setAddError(null);
+    try {
+      await onPlayNow(track.uri);
+    } catch {
+      setAddError("Couldn't play that -- make sure the bot is connected to a voice channel first.");
     }
   }
 
@@ -289,6 +331,11 @@ export function AlbumLibrary({ name, getAlbums, getAlbumDetail, onAdd, relinkPro
                     <span className="track-name">{track.name}</span>
                     <span className="track-artist">{trackArtists(track)}</span>
                   </div>
+                  <button className="ghost track-play-now" onClick={() => handlePlayNow(track)} aria-label="Play now" title="Play now">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                  </button>
                   <button onClick={() => handleAdd(track)} disabled={addedUri === track.uri}>
                     {addedUri === track.uri ? "Added" : "Add"}
                   </button>

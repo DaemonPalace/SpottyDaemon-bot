@@ -7,11 +7,15 @@ import {
   getPlayerState,
   getPlaylist,
   getPlaylists,
+  getPlaylistTrackCount,
   getRecentlyPlayed,
   nextTrack,
   pausePlayback,
   playPlayback,
+  playPlaylist,
+  playTrack,
   previousTrack,
+  queuePlaylist,
   searchTracks,
   seekPlayback,
   setPlaybackVolume,
@@ -56,6 +60,21 @@ export default function SlotProfile() {
     refresh();
   }
 
+  async function handlePlayNow(uri) {
+    await playTrack(name, uri);
+    refresh();
+  }
+
+  async function handlePlayPlaylist(playlistId) {
+    await playPlaylist(name, playlistId);
+    refresh();
+  }
+
+  async function handleQueuePlaylist(playlistId) {
+    await queuePlaylist(name, playlistId);
+    refresh();
+  }
+
   async function handlePlayPause() {
     if (nowPlaying?.is_playing) await pausePlayback(name);
     else await playPlayback(name);
@@ -74,7 +93,7 @@ export default function SlotProfile() {
   return (
     <div className="dashboard">
       <header className="dashboard-header">
-        <SearchBar search={(q) => searchTracks(name, q)} onAdd={handleAdd} />
+        <SearchBar search={(q) => searchTracks(name, q)} onAdd={handleAdd} onPlayNow={handlePlayNow} />
         <button className="ghost settings-btn" onClick={() => setShowSettings(true)}>
           <ProfileCircle name={name} avatarUrl={unlocked.avatar_url} size="sm" />
           <span>{name}</span>
@@ -94,6 +113,7 @@ export default function SlotProfile() {
                 name={name}
                 getRecentlyPlayed={getRecentlyPlayed}
                 onAdd={handleAdd}
+                onPlayNow={handlePlayNow}
                 relinkPrompt={
                   <WebApiLinkFlow
                     name={name}
@@ -106,7 +126,11 @@ export default function SlotProfile() {
                 name={name}
                 getPlaylists={getPlaylists}
                 getPlaylist={getPlaylist}
+                getPlaylistTrackCount={getPlaylistTrackCount}
                 onAdd={handleAdd}
+                onPlayNow={handlePlayNow}
+                onPlayPlaylist={handlePlayPlaylist}
+                onQueuePlaylist={handleQueuePlaylist}
                 relinkPrompt={
                   <WebApiLinkFlow
                     name={name}
@@ -120,6 +144,7 @@ export default function SlotProfile() {
                 getAlbums={getLibraryAlbums}
                 getAlbumDetail={getAlbum}
                 onAdd={handleAdd}
+                onPlayNow={handlePlayNow}
                 relinkPrompt={
                   <WebApiLinkFlow
                     name={name}

@@ -24,7 +24,16 @@ bot_process = BotProcessManager()
 
 
 async def _status(request: web.Request) -> web.Response:
-    if not admin_store.is_configured() or not env_file.read_env().get("DISCORD_TOKEN"):
+    # not_configured means "first run, setup wizard hasn't happened yet" --
+    # gated on the admin password alone, since that's the one thing only the
+    # wizard can create. Gating on DISCORD_TOKEN too used to send an
+    # already-set-up install back to the wizard whenever .env's token looked
+    # missing (blank on purpose in Secrets-Manager mode, or blanked by an
+    # unrelated bug) -- except _setup() itself refuses to run a second time
+    # once admin.json exists, so that was a dead end, not a fix path. A
+    # missing/bad token now surfaces as crash_looping via bot_process.status()
+    # instead (the bot fails to start, same as any other bad credential).
+    if not admin_store.is_configured():
         state = STATUS_NOT_CONFIGURED
     else:
         state = await bot_process.status()

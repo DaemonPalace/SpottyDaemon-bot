@@ -121,13 +121,20 @@ class BotProcessManager:
         return False
 
     async def status(self) -> str:
+        """Checks the bot's actual /healthz first, before anything this
+        process knows about its own subprocess/pidfile -- a hosted install
+        commonly runs bot/main.py as its own systemd unit (discord-music-bot
+        .service) entirely independent of this supervisor, so is_alive()
+        (which only knows about a process *this* supervisor spawned or
+        re-attached to via the pidfile) would otherwise report "stopped"
+        forever even though the real, systemd-managed bot is healthy."""
         if self._crash_looping:
             return STATUS_CRASH_LOOPING
-        if not self.is_alive():
-            return STATUS_STOPPED
         if await self._healthz_ok():
             return STATUS_RUNNING
-        return STATUS_STARTING
+        if self.is_alive():
+            return STATUS_STARTING
+        return STATUS_STOPPED
 
     async def _healthz_ok(self) -> bool:
         try:

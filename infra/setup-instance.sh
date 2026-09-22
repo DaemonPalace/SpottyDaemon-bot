@@ -30,7 +30,7 @@ echo "Information page (application ID + public key)."
 echo
 
 echo "== system packages =="
-sudo dnf install -y python3.12 python3.12-pip git gcc pkgconfig openssl-devel make
+sudo dnf install -y python3.12 python3.12-pip git gcc pkgconfig openssl-devel make rsync
 
 echo "== node.js (AL2023's dnf package is v18 -- too old for vite's toolchain) =="
 if ! command -v node >/dev/null 2>&1 || [ "$(node -e 'console.log(process.versions.node.split(".")[0])')" -lt 20 ]; then
@@ -78,7 +78,10 @@ cd "$REPO_SRC"
 
 echo "== deploy bot app =="
 sudo mkdir -p "$APP_DIR"
-sudo cp -r "$REPO_SRC"/. "$APP_DIR"/
+# Same exclusions as infra/deploy-bot.sh -- .env and librespot-cache/ are
+# live deploy state, never sourced from the git checkout, so a re-run of
+# this script (it's meant to be safe to re-run) can't clobber them.
+sudo rsync -a --exclude='.env' --exclude='librespot-cache' "$REPO_SRC"/ "$APP_DIR"/
 sudo python3.12 -m venv "$APP_DIR/venv"
 sudo "$APP_DIR/venv/bin/pip" install --upgrade pip
 sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"

@@ -3,11 +3,13 @@ session store), same shape as bot/api.py's _auth_middleware but a cookie
 instead of a bearer header, since this is a real browser login flow rather
 than a machine-to-machine API token.
 
-The admin password gates exactly one thing: deleting a slot. Everything
-else in the dashboard (status, slot list, player/queue, linking) is open
-to anyone who can reach the supervisor -- per-slot passwords gate access
-to an individual slot's profile instead, see SlotProfile.jsx's
-PasswordGate. This is deliberately narrower than a general login wall."""
+The admin password gates deleting a slot and reading the bot's raw startup
+logs (which can contain stack traces/crash detail -- not for anonymous
+visitors hitting the site while the bot's restarting). Everything else in
+the dashboard (status, slot list, player/queue, linking) is open to anyone
+who can reach the supervisor -- per-slot passwords gate access to an
+individual slot's profile instead, see SlotProfile.jsx's PasswordGate.
+This is deliberately narrower than a general login wall."""
 
 import hmac
 import time
@@ -23,11 +25,15 @@ SESSION_LIFETIME_SECONDS = 7 * 24 * 3600
 # in active use never expires mid-use.
 REISSUE_THRESHOLD_SECONDS = 24 * 3600
 
-# The only request that needs an admin session: deleting a slot. Every
-# other route (frontend SPA shell, all other /api/* endpoints) is reachable
-# with no session at all.
+# Requests that need an admin session: deleting a slot, and reading the
+# bot's raw logs (see module docstring). Every other route (frontend SPA
+# shell, all other /api/* endpoints) is reachable with no session at all.
 def _is_admin_gated(method: str, path: str) -> bool:
-    return method == "DELETE" and path.startswith("/api/slots/")
+    if method == "DELETE" and path.startswith("/api/slots/"):
+        return True
+    if method == "GET" and path == "/api/supervisor/logs":
+        return True
+    return False
 
 
 def _sign(expiry: int) -> str:

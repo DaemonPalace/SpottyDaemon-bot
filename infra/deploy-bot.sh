@@ -7,7 +7,11 @@ set -euo pipefail
 cd ~/discord-bot
 git pull
 cd frontend && npm ci && npm run build && cd ..
-sudo cp -r ~/discord-bot/. /opt/discord-bot/
+# .env and librespot-cache/ (admin.json, slots.json, ...) are live deploy
+# state, never sourced from the git checkout -- rsync --exclude keeps a
+# stray/blank .env in ~/discord-bot from ever clobbering the real one in
+# /opt (cp -r had no way to exclude anything, so it did exactly that).
+sudo rsync -a --exclude='.env' --exclude='librespot-cache' ~/discord-bot/ /opt/discord-bot/
 sudo /opt/discord-bot/venv/bin/pip install -q -r /opt/discord-bot/requirements.txt
 sudo chown -R discordbot:discordbot /opt/discord-bot
 sudo systemctl restart discord-music-bot discord-dashboard

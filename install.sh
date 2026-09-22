@@ -104,10 +104,15 @@ if [ "$MEM_KB" -lt 2097152 ] && [ "$SWAP_KB" -lt 1048576 ] && [ ! -f /swapfile ]
 fi
 
 echo "== rust toolchain =="
-if ! command -v cargo >/dev/null 2>&1; then
+if ! command -v rustup >/dev/null 2>&1; then
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 fi
 source "$HOME/.cargo/env"
+# rustup being present doesn't mean a toolchain is: an earlier run that got
+# OOM-killed mid-unpack (see the swap step above) can leave a `cargo` shim
+# on PATH with no default configured. `rustup default stable` is a cheap,
+# idempotent no-op when one's already set.
+rustup default stable
 
 echo "== build librespot (in \$HOME, not /tmp -- /tmp may be tmpfs) =="
 if [ -d "$LIBRESPOT_SRC" ]; then

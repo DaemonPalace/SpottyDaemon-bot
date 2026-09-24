@@ -39,6 +39,18 @@ sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 if sudo "$APP_DIR/venv/bin/pip" show boto3 >/dev/null 2>&1; then
   sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements-aws.txt"
 fi
+
+# Voice encoding needs the system libopus (discord.py only bundles it on
+# Windows). Older installs predate install.sh installing it -- without it
+# the bot joins voice but plays nothing (OpusNotLoaded in the logs).
+if ! ldconfig -p | grep -q libopus; then
+  echo "== libopus missing -- installing =="
+  if command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get install -y libopus0
+  else
+    sudo dnf install -y opus
+  fi
+fi
 sudo chmod +x "$APP_DIR/bin/spottydaemon"
 sudo chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 

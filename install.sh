@@ -31,7 +31,7 @@ elif command -v dnf >/dev/null 2>&1; then
 else
   echo "no apt-get or dnf found -- unsupported distro." >&2
   echo "Install by hand: python3 (>=3.10) + venv/pip, git, gcc, pkg-config," >&2
-  echo "openssl headers, make, rsync, curl -- then re-run with SKIP_SYSTEM_PACKAGES=1." >&2
+  echo "openssl headers, make, rsync, curl, libopus -- then re-run with SKIP_SYSTEM_PACKAGES=1." >&2
   exit 1
 fi
 
@@ -40,11 +40,11 @@ if [ -z "${SKIP_SYSTEM_PACKAGES:-}" ]; then
   case "$PKG_FAMILY" in
     apt)
       sudo apt-get update -y
-      sudo apt-get install -y python3 python3-venv python3-pip git gcc pkg-config libssl-dev make rsync curl
+      sudo apt-get install -y python3 python3-venv python3-pip git gcc pkg-config libssl-dev make rsync curl libopus0
       sudo apt-get clean
       ;;
     dnf)
-      sudo dnf install -y python3 python3-pip git gcc pkgconfig openssl-devel make rsync curl
+      sudo dnf install -y python3 python3-pip git gcc pkgconfig openssl-devel make rsync curl opus
       sudo dnf clean packages
       ;;
   esac

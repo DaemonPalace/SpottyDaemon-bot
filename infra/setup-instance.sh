@@ -30,7 +30,7 @@ echo "Information page (application ID + public key)."
 echo
 
 echo "== system packages =="
-sudo dnf install -y python3.12 python3.12-pip git gcc pkgconfig openssl-devel make rsync
+sudo dnf install -y python3.12 python3.12-pip git gcc pkgconfig openssl-devel make rsync opus
 
 echo "== node.js (AL2023's dnf package is v18 -- too old for vite's toolchain) =="
 if ! command -v node >/dev/null 2>&1 || [ "$(node -e 'console.log(process.versions.node.split(".")[0])')" -lt 20 ]; then

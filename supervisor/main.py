@@ -168,7 +168,10 @@ async def _spa_fallback(request: web.Request) -> web.Response:
     requested_path = os.path.normpath(os.path.join(FRONTEND_DIST_DIR, request.match_info["tail"]))
     if requested_path.startswith(FRONTEND_DIST_DIR) and os.path.isfile(requested_path):
         return web.FileResponse(requested_path)
-    return web.FileResponse(index_path)
+    # no-cache: the shell names the current hashed JS bundle. A cached copy
+    # keeps running the previous build after an update (old bundles stay on
+    # disk -- update.sh's rsync doesn't delete), talking to the new backend.
+    return web.FileResponse(index_path, headers={"Cache-Control": "no-cache"})
 
 
 def build_app() -> web.Application:

@@ -146,8 +146,8 @@ unattended). Once it finishes, either:
   ```
 
 `spottydaemon --help` lists every command (`setup`, `set KEY=VALUE` for any
-other `.env` value — e.g. `spottydaemon set MAX_SLOTS=10`, `passwd` to
-change the admin password, `start`/`stop`/`restart`, `status`). Grab the bot
+other `.env` value — e.g. `spottydaemon set MAX_SLOTS=10`, `sudo spottydaemon passwd` to
+change or reset a forgotten admin password, `start`/`stop`/`restart`, `status`). Grab the bot
 token from https://discord.com/developers/applications → your app → Bot
 page → Reset Token.
 

@@ -4,6 +4,7 @@ browser handy. Reuses env_file.py/admin_store.py directly rather than
 reimplementing their .env/admin.json handling."""
 
 import argparse
+import getpass
 import secrets
 import subprocess
 import sys
@@ -54,10 +55,21 @@ def cmd_passwd(args: argparse.Namespace) -> None:
     if not admin_store.is_configured():
         print("not set up yet -- run `spottydaemon setup` first", file=sys.stderr)
         sys.exit(1)
-    if len(args.new_password) < 8:
+    new_password = args.new_password
+    if new_password is None:
+        # Prompted, not an argument, so it stays out of shell history and ps.
+        new_password = getpass.getpass("New admin password: ")
+        if getpass.getpass("Repeat it: ") != new_password:
+            print("passwords don't match", file=sys.stderr)
+            sys.exit(1)
+    if len(new_password) < 8:
         print("password must be at least 8 characters", file=sys.stderr)
         sys.exit(1)
-    admin_store.set_password(args.new_password)
+    try:
+        admin_store.set_password(new_password)
+    except PermissionError:
+        print("can't write admin.json -- run with sudo", file=sys.stderr)
+        sys.exit(1)
     print("admin password changed")
 
 
@@ -93,8 +105,10 @@ def main() -> None:
     p_set.add_argument("pairs", nargs="+", metavar="KEY=VALUE")
     p_set.set_defaults(func=cmd_set)
 
-    p_passwd = sub.add_parser("passwd", help="change the admin (cockpit UI) password")
-    p_passwd.add_argument("new_password", metavar="NEW_PASSWORD")
+    p_passwd = sub.add_parser(
+        "passwd", help="change/reset the admin (cockpit UI) password -- prompts for it if not given"
+    )
+    p_passwd.add_argument("new_password", metavar="NEW_PASSWORD", nargs="?")
     p_passwd.set_defaults(func=cmd_passwd)
 
     for action in ("start", "stop", "restart"):

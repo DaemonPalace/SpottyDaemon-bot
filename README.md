@@ -198,6 +198,10 @@ recommended way to run this now; see ["Installing"](#installing-any-linux-server
 above for the plain self-hosted path. Kept for anyone specifically
 replicating that dev setup, or continuing to use it.
 
+Needs `boto3`, which the plain self-host install skips (it's ~100MB+ of
+nothing a self-hoster ever uses): `pip install -r requirements.txt -r
+requirements-aws.txt`.
+
 ```
 Discord ──▶ Lambda (Function URL) ──▶ /wake, /sleep: direct EC2 API calls
                 │                     /connect, /link: respond with a

@@ -41,9 +41,11 @@ if [ -z "${SKIP_SYSTEM_PACKAGES:-}" ]; then
     apt)
       sudo apt-get update -y
       sudo apt-get install -y python3 python3-venv python3-pip git gcc pkg-config libssl-dev make rsync curl
+      sudo apt-get clean
       ;;
     dnf)
       sudo dnf install -y python3 python3-pip git gcc pkgconfig openssl-devel make rsync curl
+      sudo dnf clean packages
       ;;
   esac
 fi
@@ -58,8 +60,8 @@ fi
 echo "== node.js (need >=20; distro packages are often older) =="
 if ! command -v node >/dev/null 2>&1 || [ "$(node -e 'console.log(process.versions.node.split(".")[0])')" -lt 20 ]; then
   case "$PKG_FAMILY" in
-    apt) curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash - && sudo apt-get install -y nodejs ;;
-    dnf) curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - && sudo dnf install -y nodejs ;;
+    apt) curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash - && sudo apt-get install -y nodejs && sudo apt-get clean ;;
+    dnf) curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash - && sudo dnf install -y nodejs && sudo dnf clean packages ;;
   esac
 fi
 node -v
@@ -141,6 +143,9 @@ echo "== build dashboard frontend =="
 cd "$REPO_SRC/frontend"
 npm ci
 npm run build
+# Only dist/ is served at runtime (supervisor/main.py) -- node_modules is
+# pure build-time weight (150-300MB) with no reason to reach APP_DIR.
+rm -rf node_modules
 cd "$REPO_SRC"
 
 echo "== deploy app to $APP_DIR =="

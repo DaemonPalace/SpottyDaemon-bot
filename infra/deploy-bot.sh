@@ -12,7 +12,7 @@ cd frontend && npm ci && npm run build && cd ..
 # stray/blank .env in ~/discord-bot from ever clobbering the real one in
 # /opt (cp -r had no way to exclude anything, so it did exactly that).
 sudo rsync -a --exclude='.env' --exclude='librespot-cache' ~/discord-bot/ /opt/discord-bot/
-sudo /opt/discord-bot/venv/bin/pip install -q -r /opt/discord-bot/requirements.txt
+sudo /opt/discord-bot/venv/bin/pip install -q -r /opt/discord-bot/requirements.txt -r /opt/discord-bot/requirements-aws.txt
 sudo chown -R discordbot:discordbot /opt/discord-bot
 sudo systemctl restart discord-music-bot discord-dashboard
 sleep 2

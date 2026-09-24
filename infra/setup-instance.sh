@@ -84,7 +84,10 @@ sudo mkdir -p "$APP_DIR"
 sudo rsync -a --exclude='.env' --exclude='librespot-cache' "$REPO_SRC"/ "$APP_DIR"/
 sudo python3.12 -m venv "$APP_DIR/venv"
 sudo "$APP_DIR/venv/bin/pip" install --upgrade pip
-sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+# This is the AWS deployment path -- needs boto3 (EC2 self-stop, SQS relay,
+# optional Secrets Manager), split out of the base requirements.txt so the
+# plain self-host install doesn't carry it.
+sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt" -r "$APP_DIR/requirements-aws.txt"
 
 echo "== .env =="
 if [ -f "$APP_DIR/.env" ] && grep -q '^DISCORD_TOKEN=.\+' "$APP_DIR/.env" 2>/dev/null; then

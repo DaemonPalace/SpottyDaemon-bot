@@ -40,7 +40,6 @@ import json
 import logging
 
 import aiohttp
-import boto3
 import discord
 
 from commands import (
@@ -140,15 +139,20 @@ class InteractionRelay:
         self._http: aiohttp.ClientSession | None = None
 
     def start(self) -> None:
-        # Built here, not __init__, so importing/constructing this class
-        # never requires boto3/AWS credentials -- only actually starting the
-        # relay (main.py only does so when INTERACTIONS_QUEUE_URL is set).
+        # Imported and built here, not at module level / in __init__, so
+        # importing/constructing this class never requires boto3 to even be
+        # installed -- only actually starting the relay (main.py only does
+        # so when INTERACTIONS_QUEUE_URL is set). boto3 is an optional
+        # legacy-AWS dependency (requirements-aws.txt), not part of the
+        # plain self-host install.
         # region_name explicit for the same reason bot/config.py's Secrets
         # Manager client needs it -- botocore doesn't reliably auto-resolve
         # a region under this systemd service. An unhandled exception here
         # would abort the rest of on_ready() silently (discord.py's default
         # on_error just logs it), taking link_manager/diagnostics_api's
         # own .start() calls down with it since they run after this one.
+        import boto3
+
         self._sqs = boto3.client("sqs", region_name=AWS_REGION)
         self._task = asyncio.create_task(self._loop())
 

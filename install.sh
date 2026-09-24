@@ -230,4 +230,7 @@ echo "      spottydaemon setup --bot-token <token> --admin-password <password>"
 echo "      sudo systemctl start discord-music-bot discord-dashboard"
 echo
 echo "spottydaemon --help lists every other command."
+echo
+echo "To update later (pulls latest code, rebuilds, restarts, verifies):"
+echo "  ./update.sh"
 echo "=============================================================="

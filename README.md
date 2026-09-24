@@ -115,6 +115,7 @@ Function URLs, SQS, Secrets Manager) along the way.
 - `supervisor/` — cockpit UI backend: setup wizard, admin auth, starts/stops the bot, the `spottydaemon` CLI (`supervisor/cli.py`)
 - `frontend/` — the cockpit UI itself (React)
 - `install.sh` — one-command installer for any apt/dnf Linux box (see below)
+- `update.sh` — redeploy an already-installed instance (pull, rebuild, restart, verify)
 - `systemd/` — service units for the bot, the dashboard, and an optional Caddy reverse proxy
 - `infra/`, `lambda/wake_sleep.py` — **legacy AWS-only**: EC2 auto-sleep/wake via Lambda + SQS. Not used by `install.sh`. See ["Legacy: AWS deployment"](#legacy-aws-deployment).
 
@@ -145,10 +146,15 @@ unattended). Once it finishes, either:
   ```
 
 `spottydaemon --help` lists every command (`setup`, `set KEY=VALUE` for any
-other `.env` value — e.g. `spottydaemon set MAX_SLOTS=10`, `start`/`stop`/
-`restart`, `status`). Grab the bot token from
-https://discord.com/developers/applications → your app → Bot page → Reset
-Token.
+other `.env` value — e.g. `spottydaemon set MAX_SLOTS=10`, `passwd` to
+change the admin password, `start`/`stop`/`restart`, `status`). Grab the bot
+token from https://discord.com/developers/applications → your app → Bot
+page → Reset Token.
+
+To update later: `./update.sh` — pulls the latest code, rebuilds the
+frontend, redeploys, restarts the services, and checks the bot + dashboard
+actually came back up. Faster than re-running `install.sh` (skips system
+packages/rust/librespot), which is still fine to re-run too.
 
 `INTERACTIONS_QUEUE_URL` and `HOST_CONTROLLER` (both unset by default) are
 what make this AWS-free: unset means the bot runs the gateway `CommandTree`

@@ -11,6 +11,13 @@
 # Usage: from the repo you originally ran install.sh from: ./update.sh
 set -euo pipefail
 
+if [ "$(id -u)" -eq 0 ]; then
+  # Running as root leaves root-owned files (frontend/dist, .git objects) in
+  # your checkout, and the next normal run then fails with EACCES.
+  echo "run this as your normal user, not with sudo -- it calls sudo itself where needed." >&2
+  exit 1
+fi
+
 REPO_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="/opt/discord-bot"
 APP_USER="discordbot"

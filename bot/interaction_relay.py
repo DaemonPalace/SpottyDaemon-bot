@@ -298,10 +298,10 @@ class InteractionRelay:
                 guild, member, argument, password, self.librespot, self.store, channel_id
             )
             if not ephemeral and channel_id is not None:
-                slot_index, jam_error = resolve_jam_slot(guild.id, self.store)
-                if jam_error is None:
-                    channel = self.client.get_channel(channel_id) or await self.client.fetch_channel(channel_id)
-                    await self.jam_manager.start_jam_in_channel(channel, slot_index)
+                channel = self.client.get_channel(channel_id) or await self.client.fetch_channel(channel_id)
+                note = await self.jam_manager.auto_start(channel, guild.id)
+                if note is not None:
+                    content = f"{content}\n{note}"
         elif command_name == "reconnect":
             content, ephemeral = await do_reconnect(
                 guild, member, argument, password, self.librespot, self.store, channel_id

@@ -147,11 +147,10 @@ async def connect(interaction: discord.Interaction, slot: str):
         await modal_interaction.followup.send(content, ephemeral=ephemeral)
         if not ephemeral:
             # Auto-post the Jam panel in the channel /connect was run from,
-            # same as running /jam by hand -- skipped quietly if the slot
-            # isn't Web-API-linked yet (resolve_jam_slot's error case).
-            slot_index, jam_error = resolve_jam_slot(guild.id, slot_store)
-            if jam_error is None:
-                await jam_manager.start_jam_in_channel(interaction.channel, slot_index)
+            # same as running /jam by hand.
+            note = await jam_manager.auto_start(interaction.channel, guild.id)
+            if note is not None:
+                await modal_interaction.followup.send(note, ephemeral=True)
 
     await interaction.response.send_modal(PasswordModal(f"Password for '{slot}'", handle_submit))
 

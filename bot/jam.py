@@ -30,7 +30,7 @@ import secrets
 import discord
 
 import spotify_player_api
-from commands import flush_slot_pipe
+from commands import flush_slot_pipe, resolve_jam_slot
 from config import PUBLIC_DASHBOARD_URL
 from librespot_manager import LibrespotManager
 from slot_store import SlotStore
@@ -112,6 +112,20 @@ class JamManager:
         message = await channel.send(embed=embed, view=JamView(self, token))
         task = asyncio.create_task(self._refresh_loop(guild.id))
         self._sessions[guild.id] = JamSession(message, slot_index, task, token)
+
+    async def auto_start(self, channel: discord.abc.Messageable, guild_id: int) -> str | None:
+        """/connect's automatic panel post. Returns a note for whoever ran
+        /connect if the panel couldn't be posted, instead of failing silently
+        (the connect itself already worked -- this never undoes it)."""
+        slot_index, error = resolve_jam_slot(guild_id, self.slot_store)
+        if error is not None:
+            return f"Jam panel not posted: {error[0]}"
+        try:
+            await self.start_jam_in_channel(channel, slot_index)
+        except Exception:
+            log.exception("auto-posting jam panel failed for guild %s", guild_id)
+            return "Jam panel couldn't be posted here -- the bot needs Send Messages + Embed Links in this channel."
+        return None
 
     async def repost(self, guild_id: int) -> None:
         """Deletes the current panel message and resends it as a fresh one

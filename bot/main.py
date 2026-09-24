@@ -326,11 +326,26 @@ async def link_web_api_finish(interaction: discord.Interaction, url: str):
 # docstring), the bot process is already up, so both are trivial.
 @tree.command(name="wake", description="Start the music bot instance (takes ~30s)")
 async def wake(interaction: discord.Interaction):
+    if host_controller.describe() == "noop":
+        await interaction.response.send_message(
+            "Already running -- this install doesn't auto-sleep/wake (no Lambda/EC2 configured, "
+            "HOST_CONTROLLER=noop). See README's \"Legacy: AWS deployment\" section for that setup.",
+            ephemeral=True,
+        )
+        return
     await interaction.response.send_message("Already running.", ephemeral=True)
 
 
 @tree.command(name="sleep", description="Stop the music bot instance")
 async def sleep(interaction: discord.Interaction):
+    if host_controller.describe() == "noop":
+        await interaction.response.send_message(
+            "Can't self-stop -- this install has no Lambda/EC2 configured (HOST_CONTROLLER=noop). "
+            "Stop it yourself (e.g. `sudo systemctl stop discord-music-bot`), or set up the legacy "
+            "AWS auto-sleep/wake deployment -- see README's \"Legacy: AWS deployment\" section.",
+            ephemeral=True,
+        )
+        return
     await interaction.response.send_message("Stopping the music bot instance.")
     await host_controller.stop_host()
 

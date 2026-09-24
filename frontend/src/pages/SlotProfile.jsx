@@ -20,6 +20,7 @@ import {
   seekPlayback,
   setPlaybackVolume,
 } from "../api/client";
+import AdminSettingsModal from "../components/AdminSettingsModal";
 import NowPlayingBar from "../components/NowPlayingBar";
 import PasswordPromptModal from "../components/PasswordPromptModal";
 import { AlbumLibrary, QueueList } from "../components/Player";
@@ -37,6 +38,7 @@ export default function SlotProfile() {
   const navigate = useNavigate();
   const [unlocked, setUnlocked] = useState(location.state || null); // select() response
   const [showSettings, setShowSettings] = useState(false);
+  const [showAdminSettings, setShowAdminSettings] = useState(false);
 
   const { nowPlaying, queue, error: playerError, refresh } = useSlotPlayer({
     name: unlocked ? name : undefined,
@@ -97,6 +99,15 @@ export default function SlotProfile() {
         <button className="ghost settings-btn" onClick={() => setShowSettings(true)}>
           <ProfileCircle name={name} avatarUrl={unlocked.avatar_url} size="sm" />
           <span>{name}</span>
+        </button>
+        <button
+          type="button"
+          className="ghost icon-btn"
+          onClick={() => setShowAdminSettings(true)}
+          aria-label="Admin settings"
+          title="Admin settings"
+        >
+          ⚙
         </button>
       </header>
 
@@ -183,6 +194,8 @@ export default function SlotProfile() {
           onUpdated={handleSettingsUpdated}
         />
       )}
+
+      {showAdminSettings && <AdminSettingsModal onClose={() => setShowAdminSettings(false)} />}
     </div>
   );
 }

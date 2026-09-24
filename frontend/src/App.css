@@ -500,6 +500,7 @@ button:disabled {
 /* Profile select (Netflix-style) */
 
 .profile-select {
+  position: relative;
   min-height: 100svh;
   display: flex;
   flex-direction: column;
@@ -507,6 +508,18 @@ button:disabled {
   justify-content: center;
   gap: 2rem;
   padding: 2rem 1.25rem;
+}
+
+.icon-btn {
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 0.5rem 0.7rem;
+}
+
+.profile-admin-btn {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.25rem;
 }
 
 .profile-select-title {

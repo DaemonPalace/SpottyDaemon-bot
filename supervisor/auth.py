@@ -3,13 +3,15 @@ session store), same shape as bot/api.py's _auth_middleware but a cookie
 instead of a bearer header, since this is a real browser login flow rather
 than a machine-to-machine API token.
 
-The admin password gates deleting a slot and reading the bot's raw startup
+The admin password gates deleting a slot, reading the bot's raw startup
 logs (which can contain stack traces/crash detail -- not for anonymous
-visitors hitting the site while the bot's restarting). Everything else in
-the dashboard (status, slot list, player/queue, linking) is open to anyone
-who can reach the supervisor -- per-slot passwords gate access to an
-individual slot's profile instead, see SlotProfile.jsx's PasswordGate.
-This is deliberately narrower than a general login wall."""
+visitors hitting the site while the bot's restarting), and the admin
+settings screen (.env values, admin password change -- see
+AdminSettingsModal.jsx). Everything else in the dashboard (status, slot
+list, player/queue, linking) is open to anyone who can reach the
+supervisor -- per-slot passwords gate access to an individual slot's
+profile instead, see SlotProfile.jsx's PasswordGate. This is deliberately
+narrower than a general login wall."""
 
 import hmac
 import time
@@ -32,6 +34,10 @@ def _is_admin_gated(method: str, path: str) -> bool:
     if method == "DELETE" and path.startswith("/api/slots/"):
         return True
     if method == "GET" and path == "/api/supervisor/logs":
+        return True
+    if path == "/api/supervisor/settings" and method in ("GET", "POST"):
+        return True
+    if method == "POST" and path == "/api/supervisor/admin-password":
         return True
     return False
 

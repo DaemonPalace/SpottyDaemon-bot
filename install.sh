@@ -157,6 +157,23 @@ sudo "$PYTHON_BIN" -m venv "$APP_DIR/venv"
 sudo "$APP_DIR/venv/bin/pip" install --upgrade pip
 sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 
+# boto3/botocore (~100MB+) is only needed for the legacy AWS deployment
+# mode (EC2 auto-sleep/wake, Secrets Manager) -- skipped by default so a
+# plain self-host install doesn't carry it. INSTALL_AWS_SUPPORT=1 skips
+# the prompt and installs it unattended.
+if [ "${INSTALL_AWS_SUPPORT:-}" = "1" ]; then
+  INSTALL_AWS_SUPPORT_ANSWER=y
+elif [ -t 0 ] && [ -z "${INSTALL_AWS_SUPPORT:-}" ]; then
+  read -r -p "Install legacy AWS support (boto3, for EC2 auto-sleep/wake)? [y/N] " INSTALL_AWS_SUPPORT_ANSWER
+else
+  INSTALL_AWS_SUPPORT_ANSWER=n
+fi
+if [ "${INSTALL_AWS_SUPPORT_ANSWER:-n}" = "y" ] || [ "${INSTALL_AWS_SUPPORT_ANSWER:-n}" = "Y" ]; then
+  sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements-aws.txt"
+else
+  echo "-> skipped. Install later with: sudo $APP_DIR/venv/bin/pip install -r $APP_DIR/requirements-aws.txt"
+fi
+
 if [ ! -f "$APP_DIR/.env" ]; then
   sudo cp "$APP_DIR/.env.example" "$APP_DIR/.env"
 fi

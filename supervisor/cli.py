@@ -50,6 +50,17 @@ def cmd_set(args: argparse.Namespace) -> None:
     print("set: " + ", ".join(values))
 
 
+def cmd_passwd(args: argparse.Namespace) -> None:
+    if not admin_store.is_configured():
+        print("not set up yet -- run `spottydaemon setup` first", file=sys.stderr)
+        sys.exit(1)
+    if len(args.new_password) < 8:
+        print("password must be at least 8 characters", file=sys.stderr)
+        sys.exit(1)
+    admin_store.set_password(args.new_password)
+    print("admin password changed")
+
+
 def _make_systemctl_cmd(action: str):
     def _run(args: argparse.Namespace) -> None:
         subprocess.run(["systemctl", action, *SERVICES], check=False)
@@ -75,9 +86,16 @@ def main() -> None:
     )
     p_setup.set_defaults(func=cmd_setup)
 
-    p_set = sub.add_parser("set", help="set one or more .env values without full setup")
+    p_set = sub.add_parser(
+        "set",
+        help="set one or more .env values without full setup (e.g. SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, MAX_SLOTS)",
+    )
     p_set.add_argument("pairs", nargs="+", metavar="KEY=VALUE")
     p_set.set_defaults(func=cmd_set)
+
+    p_passwd = sub.add_parser("passwd", help="change the admin (cockpit UI) password")
+    p_passwd.add_argument("new_password", metavar="NEW_PASSWORD")
+    p_passwd.set_defaults(func=cmd_passwd)
 
     for action in ("start", "stop", "restart"):
         p = sub.add_parser(action, help=f"{action} the bot + dashboard services")

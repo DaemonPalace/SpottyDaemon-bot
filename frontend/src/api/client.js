@@ -27,6 +27,10 @@ export const logout = () => request("POST", "/api/supervisor/logout");
 export const getLogs = () => request("GET", "/api/supervisor/logs");
 export const startBot = () => request("POST", "/api/supervisor/bot/start");
 export const restartBot = () => request("POST", "/api/supervisor/bot/restart");
+export const getAdminSettings = () => request("GET", "/api/supervisor/settings");
+export const updateAdminSettings = (values) => request("POST", "/api/supervisor/settings", values);
+export const changeAdminPassword = (newPassword) =>
+  request("POST", "/api/supervisor/admin-password", { new_password: newPassword });
 
 // Slots (open to the dashboard; deleteSlot is the one route that needs the
 // admin session cookie -- see supervisor/auth.py's _is_admin_gated)

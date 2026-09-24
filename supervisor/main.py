@@ -22,6 +22,23 @@ log = logging.getLogger("supervisor")
 
 bot_process = BotProcessManager()
 
+# (key, secret) -- shown in the admin settings screen (AdminSettingsModal.jsx).
+# secret fields never echo their current value back to the client, only
+# whether one is set; DEV_GUILD_ID/API_TOKEN/etc. are internal-only and
+# stay out of this list on purpose.
+SETTINGS_FIELDS = [
+    ("DISCORD_TOKEN", True),
+    ("SPOTIFY_CLIENT_ID", False),
+    ("SPOTIFY_CLIENT_SECRET", True),
+    ("SPOTIFY_WEB_API_REDIRECT_URI", False),
+    ("MAX_SLOTS", False),
+    ("IDLE_SHUTDOWN_MINUTES", False),
+    ("ENABLE_AUTO_SHUTDOWN", False),
+]
+# Changing these needs the bot process restarted to take effect (env vars
+# are only read at bot/main.py's startup import time).
+RESTART_ON_CHANGE = {"DISCORD_TOKEN", "MAX_SLOTS"}
+
 
 async def _status(request: web.Request) -> web.Response:
     # not_configured means "first run, setup wizard hasn't happened yet" --
@@ -80,6 +97,47 @@ async def _logout(request: web.Request) -> web.Response:
     return response
 
 
+async def _get_settings(request: web.Request) -> web.Response:
+    current = env_file.read_env()
+    fields = {
+        key: {"value": "" if secret else current.get(key, ""), "isSet": bool(current.get(key))}
+        for key, secret in SETTINGS_FIELDS
+    }
+    return web.json_response(fields)
+
+
+async def _update_settings(request: web.Request) -> web.Response:
+    body = await request.json()
+    allowed = {key for key, _ in SETTINGS_FIELDS}
+    # Blank means "leave as-is" (how a masked secret field round-trips
+    # without ever having its real value sent back to the browser) --
+    # never used to clear a value.
+    values = {k: str(v) for k, v in body.items() if k in allowed and str(v).strip() != ""}
+    if not values:
+        return web.json_response({"updated": [], "restarted": False})
+
+    env_file.set_env_values(values)
+
+    restarted = False
+    if RESTART_ON_CHANGE & values.keys() and admin_store.is_configured():
+        await bot_process.restart()
+        restarted = True
+    return web.json_response({"updated": list(values), "restarted": restarted})
+
+
+async def _change_admin_password(request: web.Request) -> web.Response:
+    body = await request.json()
+    new_password = body.get("new_password", "")
+    if len(new_password) < 8:
+        raise web.HTTPBadRequest(text="new password must be at least 8 characters")
+    # No separate "current password" check -- reaching this endpoint at all
+    # already required the admin session cookie (auth.py's
+    # _is_admin_gated), which only exists because /login already verified
+    # it moments ago. Same trust level SlotList.jsx's delete-confirm uses.
+    admin_store.set_password(new_password)
+    return web.json_response({"changed": True})
+
+
 async def _logs(request: web.Request) -> web.Response:
     return web.json_response({"lines": list(bot_process.logs)})
 
@@ -120,6 +178,9 @@ def build_app() -> web.Application:
     app.router.add_post("/api/supervisor/login", _login)
     app.router.add_post("/api/supervisor/logout", _logout)
     app.router.add_get("/api/supervisor/logs", _logs)
+    app.router.add_get("/api/supervisor/settings", _get_settings)
+    app.router.add_post("/api/supervisor/settings", _update_settings)
+    app.router.add_post("/api/supervisor/admin-password", _change_admin_password)
     app.router.add_post("/api/supervisor/bot/start", _bot_start)
     app.router.add_post("/api/supervisor/bot/stop", _bot_stop)
     app.router.add_post("/api/supervisor/bot/restart", _bot_restart)

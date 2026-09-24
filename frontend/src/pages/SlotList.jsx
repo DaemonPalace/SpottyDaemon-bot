@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { deleteSlot, listSlots, login, startBot } from "../api/client";
+import AdminSettingsModal from "../components/AdminSettingsModal";
 import CreateProfileModal from "../components/CreateProfileModal";
 import PasswordPromptModal from "../components/PasswordPromptModal";
 import ProfileCircle from "../components/ProfileCircle";
@@ -64,6 +65,7 @@ export default function SlotList() {
   const [unlocking, setUnlocking] = useState(null); // slot name, or null
   const [creating, setCreating] = useState(false);
   const [deleting, setDeleting] = useState(null); // slot name, or null
+  const [showAdminSettings, setShowAdminSettings] = useState(false);
   const navigate = useNavigate();
 
   async function refresh() {
@@ -111,6 +113,15 @@ export default function SlotList() {
 
   return (
     <div className="profile-select">
+      <button
+        type="button"
+        className="ghost icon-btn profile-admin-btn"
+        onClick={() => setShowAdminSettings(true)}
+        aria-label="Admin settings"
+        title="Admin settings"
+      >
+        ⚙
+      </button>
       <h1 className="profile-select-title">Who's playing?</h1>
       {error && <p className="error">{error}</p>}
 
@@ -171,6 +182,8 @@ export default function SlotList() {
           }}
         />
       )}
+
+      {showAdminSettings && <AdminSettingsModal onClose={() => setShowAdminSettings(false)} />}
     </div>
   );
 }

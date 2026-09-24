@@ -10,18 +10,31 @@ unless the self-hoster opts in). If API_TOKEN is set, every route except
 startup warning is logged and all routes are open -- fine for diagnostics
 tooling and a local UI, not a substitute for real auth if this is ever
 exposed beyond localhost.
+
+Per-slot access (_slot_access_middleware): every /api/slots/{name}/...
+route except /select also needs one of, in an X-* header the supervisor
+forwards (supervisor/proxy.py):
+  - X-Admin: 1 -- set by the supervisor only for a valid admin session;
+  - X-Slot-Token: a slot session token, handed out by /select after a
+    correct password (signed with that slot's password hash, so changing
+    the password logs every old session out);
+  - X-Slot-Token: a live /jam panel's token (bot/jam.py) -- playback/
+    browsing routes only, never settings, relinking or delete.
 """
 
 import asyncio
+import hmac
 import logging
 import secrets
 import time
+from hashlib import sha256
 
 from aiohttp import web
 
 import spotify_player_api
 from commands import active_sessions_snapshot, do_delete_slot
 from config import API_HOST, API_PORT, API_TOKEN, MAX_SLOTS
+from jam import JamManager
 from librespot_manager import LibrespotManager
 from slot_store import STATE_CLAIMED, SlotStore
 from spotify_link import LinkManager
@@ -30,6 +43,30 @@ from spotify_web_api import WebApiLinkManager
 log = logging.getLogger("api")
 
 _START_MONOTONIC = time.monotonic()
+
+SLOT_SESSION_SECONDS = 7 * 24 * 3600
+# First path segment after /api/slots/{name}/ that a jam guest may use.
+JAM_ALLOWED_ROUTES = {
+    "player-state", "queue", "search", "library", "albums", "recently-played", "playlists", "player"
+}
+
+
+def _slot_token_mac(password_hash: str, expiry: int) -> str:
+    return hmac.new(password_hash.encode(), f"slot-session:{expiry}".encode(), sha256).hexdigest()
+
+
+def issue_slot_token(password_hash: str) -> str:
+    expiry = int(time.time()) + SLOT_SESSION_SECONDS
+    return f"{expiry}.{_slot_token_mac(password_hash, expiry)}"
+
+
+def verify_slot_token(password_hash: str, token: str) -> bool:
+    try:
+        expiry_str, mac = token.split(".", 1)
+        expiry = int(expiry_str)
+    except ValueError:
+        return False
+    return expiry >= time.time() and hmac.compare_digest(_slot_token_mac(password_hash, expiry), mac)
 
 
 class DiagnosticsApi:
@@ -46,12 +83,14 @@ class DiagnosticsApi:
         slot_store: SlotStore,
         link_manager: LinkManager,
         web_api_link_manager: WebApiLinkManager,
+        jam_manager: JamManager,
     ):
         self.client = client
         self.librespot = librespot
         self.slot_store = slot_store
         self.link_manager = link_manager
         self.web_api_link_manager = web_api_link_manager
+        self.jam_manager = jam_manager
         self._runner: web.AppRunner | None = None
 
         if not API_TOKEN:
@@ -65,8 +104,29 @@ class DiagnosticsApi:
                 raise web.HTTPUnauthorized(text="missing or invalid bearer token")
         return await handler(request)
 
+    @web.middleware
+    async def _slot_access_middleware(self, request: web.Request, handler):
+        is_admin = request.headers.get("X-Admin") == "1"
+        name = request.match_info.get("name")
+        canonical = request.match_info.route.resource.canonical if request.match_info.route.resource else ""
+        if request.path == "/api/sessions" and not is_admin:
+            raise web.HTTPUnauthorized(text="admin only")
+        if name is not None and canonical != "/api/slots/{name}/select" and not is_admin:
+            route = canonical.removeprefix("/api/slots/{name}/").split("/")[0]
+            if not self._has_slot_access(name, request.headers.get("X-Slot-Token", ""), route):
+                raise web.HTTPUnauthorized(text="unlock this profile first")
+        return await handler(request)
+
+    def _has_slot_access(self, name: str, token: str, route: str) -> bool:
+        meta = self.slot_store.get_by_name(name)
+        if meta is None or not token:
+            return False
+        if route in JAM_ALLOWED_ROUTES and self.jam_manager.slot_index_for_token(token) == meta.index:
+            return True
+        return meta.password_hash is not None and verify_slot_token(meta.password_hash, token)
+
     def _build_app(self) -> web.Application:
-        app = web.Application(middlewares=[self._auth_middleware])
+        app = web.Application(middlewares=[self._auth_middleware, self._slot_access_middleware])
         app.router.add_get("/healthz", self._healthz)
         app.router.add_get("/api/latency", self._latency)
         app.router.add_get("/api/slots", self._slots)
@@ -75,6 +135,7 @@ class DiagnosticsApi:
         app.router.add_post("/api/slots/link/start", self._link_start)
         app.router.add_post("/api/slots/link/finish", self._link_finish)
         app.router.add_post("/api/slots/{name}/select", self._slot_select)
+        app.router.add_get("/api/jam/{token}", self._jam_slot)
         app.router.add_delete("/api/slots/{name}", self._slot_delete)
         app.router.add_post("/api/slots/{name}/web-api-link/start", self._web_api_link_start)
         app.router.add_post("/api/slots/{name}/web-api-link/finish", self._web_api_link_finish)
@@ -220,6 +281,25 @@ class DiagnosticsApi:
                 "web_api_linked": meta.web_api_refresh_token is not None,
                 "avatar_url": meta.avatar_url,
                 "display_name": meta.spotify_display_name,
+                "slot_token": issue_slot_token(meta.password_hash),
+            }
+        )
+
+    async def _jam_slot(self, request: web.Request) -> web.Response:
+        """No-password equivalent of _slot_select for a live /jam panel's
+        dashboard link (bot/jam.py). Same response shape, so the frontend
+        treats a resolved jam token exactly like an unlocked profile."""
+        slot_index = self.jam_manager.slot_index_for_token(request.match_info["token"])
+        meta = self.slot_store.get_by_index(slot_index) if slot_index is not None else None
+        if meta is None or meta.state != STATE_CLAIMED:
+            raise web.HTTPNotFound(text="this jam has ended")
+        return web.json_response(
+            {
+                "name": meta.friendly_name,
+                "state": meta.state,
+                "web_api_linked": meta.web_api_refresh_token is not None,
+                "avatar_url": meta.avatar_url,
+                "display_name": meta.spotify_display_name,
             }
         )
 
@@ -345,7 +425,14 @@ class DiagnosticsApi:
         if error:
             raise web.HTTPBadRequest(text=error)
         updated = self.slot_store.get_by_index(meta.index)
-        return web.json_response({"name": updated.friendly_name, "avatar_url": updated.avatar_url})
+        return web.json_response(
+            {
+                "name": updated.friendly_name,
+                "avatar_url": updated.avatar_url,
+                # Fresh token: a password change invalidates the old one.
+                "slot_token": issue_slot_token(updated.password_hash),
+            }
+        )
 
     async def _recently_played(self, request: web.Request) -> web.Response:
         token = await self._get_slot_access_token(request.match_info["name"])

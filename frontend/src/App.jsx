@@ -24,6 +24,7 @@ export default function App() {
         <Route path="/starting" element={<Starting />} />
         <Route path="/slots" element={<SlotList />} />
         <Route path="/slots/:name" element={<SlotProfile />} />
+        <Route path="/jam/:jamToken" element={<SlotProfile />} />
         <Route path="/" element={<RootRedirect />} />
         <Route path="*" element={<RootRedirect />} />
       </Routes>

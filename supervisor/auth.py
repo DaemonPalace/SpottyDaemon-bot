@@ -10,7 +10,7 @@ settings screen (.env values, admin password change -- see
 AdminSettingsModal.jsx). Everything else in the dashboard (status, slot
 list, player/queue, linking) is open to anyone who can reach the
 supervisor -- per-slot passwords gate access to an individual slot's
-profile instead, see SlotProfile.jsx's PasswordGate. This is deliberately
+profile instead, enforced by bot/api.py's _slot_access_middleware. This is deliberately
 narrower than a general login wall."""
 
 import hmac
@@ -59,6 +59,11 @@ def _verify(cookie_value: str) -> bool:
     secret = admin_store.get_session_secret()
     expected = hmac.new(secret.encode(), f"admin:{expiry}".encode(), sha256).hexdigest()
     return hmac.compare_digest(expected, mac)
+
+
+def is_admin(request: web.Request) -> bool:
+    cookie_value = request.cookies.get(COOKIE_NAME)
+    return bool(cookie_value) and admin_store.is_configured() and _verify(cookie_value)
 
 
 def issue_cookie(response: web.StreamResponse) -> None:

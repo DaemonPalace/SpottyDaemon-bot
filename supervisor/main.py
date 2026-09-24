@@ -31,13 +31,14 @@ SETTINGS_FIELDS = [
     ("SPOTIFY_CLIENT_ID", False),
     ("SPOTIFY_CLIENT_SECRET", True),
     ("SPOTIFY_WEB_API_REDIRECT_URI", False),
+    ("PUBLIC_DASHBOARD_URL", False),
     ("MAX_SLOTS", False),
     ("IDLE_SHUTDOWN_MINUTES", False),
     ("ENABLE_AUTO_SHUTDOWN", False),
 ]
 # Changing these needs the bot process restarted to take effect (env vars
 # are only read at bot/main.py's startup import time).
-RESTART_ON_CHANGE = {"DISCORD_TOKEN", "MAX_SLOTS"}
+RESTART_ON_CHANGE = {"DISCORD_TOKEN", "MAX_SLOTS", "PUBLIC_DASHBOARD_URL"}
 
 
 async def _status(request: web.Request) -> web.Response:
@@ -186,8 +187,8 @@ def build_app() -> web.Application:
     app.router.add_post("/api/supervisor/bot/restart", _bot_restart)
 
     # Catch-all: everything else under /api/* is proxied straight through to
-    # bot/api.py. auth.session_middleware only gates DELETE /api/slots/*
-    # (slot deletion) -- see auth.py's module docstring for why.
+    # bot/api.py. auth.session_middleware gates the admin-only routes; the
+    # bot itself checks per-slot access (bot/api.py's _slot_access_middleware).
     app.router.add_route("*", "/api/{tail:.*}", proxy.proxy_api)
 
     if os.path.isdir(FRONTEND_DIST_DIR):

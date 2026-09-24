@@ -208,6 +208,8 @@ EOF
   sudo cp "$APP_DIR/systemd/caddy.service" /etc/systemd/system/
   sudo systemctl daemon-reload
   sudo systemctl enable --now caddy
+  sudo sed -i '/^PUBLIC_DASHBOARD_URL=/d' "$APP_DIR/.env"
+  echo "PUBLIC_DASHBOARD_URL=https://$DASHBOARD_DOMAIN_INPUT" | sudo tee -a "$APP_DIR/.env" >/dev/null
   echo "-> Caddyfile written for $DASHBOARD_DOMAIN_INPUT. Point its DNS A record at"
   echo "   this box and open inbound 80/443 before it can get a cert."
 else

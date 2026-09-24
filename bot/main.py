@@ -43,8 +43,8 @@ link_manager = LinkManager(slot_store, librespot)
 web_api_link_manager = WebApiLinkManager(slot_store)
 host_controller = build_host_controller(HOST_CONTROLLER)
 idle_monitor = IdleMonitor(client, slot_store, host_controller)
-diagnostics_api = DiagnosticsApi(client, librespot, slot_store, link_manager, web_api_link_manager)
 jam_manager = JamManager(slot_store, web_api_link_manager, librespot)
+diagnostics_api = DiagnosticsApi(client, librespot, slot_store, link_manager, web_api_link_manager, jam_manager)
 # None when no Lambda/SQS relay is configured -- the gateway CommandTree
 # below is then the one and only command path (self-host/standalone default).
 interaction_relay = (

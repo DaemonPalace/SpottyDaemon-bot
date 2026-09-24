@@ -175,6 +175,8 @@ EOF
   sudo cp "$APP_DIR/systemd/caddy.service" /etc/systemd/system/
   sudo systemctl daemon-reload
   sudo systemctl enable --now caddy
+  sudo sed -i '/^PUBLIC_DASHBOARD_URL=/d' "$APP_DIR/.env"
+  echo "PUBLIC_DASHBOARD_URL=https://$DASHBOARD_DOMAIN_INPUT" | sudo tee -a "$APP_DIR/.env" >/dev/null
   echo "-> Caddyfile written for $DASHBOARD_DOMAIN_INPUT. Make sure its DNS A record"
   echo "   points at this instance's (Elastic) IP and inbound 80/443 are open in"
   echo "   its security group before it'll get a cert."

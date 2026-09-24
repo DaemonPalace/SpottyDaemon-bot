@@ -326,6 +326,9 @@ developer.spotify.com and add `SPOTIFY_WEB_API_REDIRECT_URI` (default
 `/api/latency`, `/api/slots`, `/api/slots/<name>/audio`, `/api/sessions`.
 Set `API_TOKEN` to require `Authorization: Bearer <token>` on everything
 except `/healthz` — recommended before exposing this beyond localhost.
+`/api/slots/<name>/...` routes (other than `/select`) and `/api/sessions`
+also need `X-Admin: 1` (or a slot token from `/select` in `X-Slot-Token`);
+the dashboard supervisor sets these itself.
 
 ## Known gaps / next steps
 

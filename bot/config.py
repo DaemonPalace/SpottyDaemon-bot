@@ -59,6 +59,14 @@ API_HOST = os.environ.get("API_HOST", "127.0.0.1")
 API_PORT = int(os.environ.get("API_PORT", "8787"))
 API_TOKEN = os.environ.get("API_TOKEN")
 
+# Public base URL of the dashboard (e.g. https://music.example.com). When
+# set, the /jam panel links guests to a no-password jam dashboard on it
+# (bot/jam.py). Unset: no link button, since there's nothing public to
+# point at. A bare domain gets https:// prepended.
+PUBLIC_DASHBOARD_URL = os.environ.get("PUBLIC_DASHBOARD_URL", "").strip().rstrip("/")
+if PUBLIC_DASHBOARD_URL and "://" not in PUBLIC_DASHBOARD_URL:
+    PUBLIC_DASHBOARD_URL = f"https://{PUBLIC_DASHBOARD_URL}"
+
 # Optional: a test server's guild ID. When set, slash commands sync to just
 # that guild instead of globally -- guild-scoped commands update instantly,
 # global ones can take up to an hour to propagate (plus Discord client-side

@@ -1,14 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   addToQueue,
   getAlbum,
+  getJamSlot,
   getLibraryAlbums,
   getPlayerState,
   getPlaylist,
   getPlaylists,
   getPlaylistTrackCount,
   getRecentlyPlayed,
+  setSlotToken,
   nextTrack,
   pausePlayback,
   playPlayback,
@@ -32,18 +34,57 @@ import SettingsModal from "../components/SettingsModal";
 import WebApiLinkFlow from "../components/WebApiLinkFlow";
 import { useSlotPlayer } from "../hooks/useSlotPlayer";
 
+/** Mounted at /slots/:name (password-gated owner view) and /jam/:jamToken
+ * (guest view from a /jam panel's "Open dashboard" link -- the token stands
+ * in for the password, and owner-only controls are hidden). */
 export default function SlotProfile() {
-  const { name } = useParams();
+  const { name: routeName, jamToken } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const [unlocked, setUnlocked] = useState(location.state || null); // select() response
+  // select() response. History state from before slot tokens existed (no
+  // slot_token) can't make authenticated calls -- re-prompt instead.
+  const [unlocked, setUnlocked] = useState(jamToken || !location.state?.slot_token ? null : location.state);
+  const [jamError, setJamError] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showAdminSettings, setShowAdminSettings] = useState(false);
+  const name = jamToken ? unlocked?.name : routeName;
+  // Set during render, not in an effect: child components' fetch effects
+  // run before this component's own effects would.
+  setSlotToken(jamToken || unlocked?.slot_token);
+
+  useEffect(() => {
+    if (jamToken) getJamSlot(jamToken).then(setUnlocked).catch(setJamError);
+  }, [jamToken]);
 
   const { nowPlaying, queue, error: playerError, refresh } = useSlotPlayer({
     name: unlocked ? name : undefined,
     fetchers: { getPlayerState },
   });
+
+  // Rejected credential: the jam ended, or the slot session expired/its
+  // password changed elsewhere.
+  useEffect(() => {
+    if (playerError?.status !== 401) return;
+    if (jamToken) setJamError({ status: 404 });
+    setUnlocked(null);
+  }, [playerError, jamToken]);
+
+  if (jamToken && !unlocked) {
+    return (
+      <div className="screen">
+        {jamError ? (
+          <>
+            <h1>{jamError.status === 404 ? "This jam has ended" : "Couldn't open this jam"}</h1>
+            <p className="hint">
+              {jamError.status === 404 ? "Ask for a fresh link -- run /jam in Discord again." : jamError.message}
+            </p>
+          </>
+        ) : (
+          <p className="hint">Joining jam...</p>
+        )}
+      </div>
+    );
+  }
 
   if (!unlocked) {
     return (
@@ -56,6 +97,12 @@ export default function SlotProfile() {
   }
 
   const webApiLinked = unlocked.web_api_linked;
+
+  // Guests can't re-authorize someone else's Spotify -- just say what's missing.
+  function relinkPrompt(prompt) {
+    if (jamToken) return <p className="hint">{prompt}</p>;
+    return <WebApiLinkFlow name={name} prompt={prompt} onLinked={() => window.location.reload()} />;
+  }
 
   async function handleAdd(uri) {
     await addToQueue(name, uri);
@@ -86,9 +133,13 @@ export default function SlotProfile() {
   async function handleSettingsUpdated(data) {
     setShowSettings(false);
     if (data.name !== name) {
-      navigate(`/slots/${data.name}`, { state: { ...unlocked, name: data.name, avatar_url: data.avatar_url }, replace: true });
+      setUnlocked({ ...unlocked, name: data.name, avatar_url: data.avatar_url, slot_token: data.slot_token });
+      navigate(`/slots/${data.name}`, {
+        state: { ...unlocked, name: data.name, avatar_url: data.avatar_url, slot_token: data.slot_token },
+        replace: true,
+      });
     } else {
-      setUnlocked({ ...unlocked, avatar_url: data.avatar_url });
+      setUnlocked({ ...unlocked, avatar_url: data.avatar_url, slot_token: data.slot_token });
     }
   }
 
@@ -96,19 +147,28 @@ export default function SlotProfile() {
     <div className="dashboard">
       <header className="dashboard-header">
         <SearchBar search={(q) => searchTracks(name, q)} onAdd={handleAdd} onPlayNow={handlePlayNow} />
-        <button className="ghost settings-btn" onClick={() => setShowSettings(true)}>
-          <ProfileCircle name={name} avatarUrl={unlocked.avatar_url} size="sm" />
-          <span>{name}</span>
-        </button>
-        <button
-          type="button"
-          className="ghost icon-btn"
-          onClick={() => setShowAdminSettings(true)}
-          aria-label="Admin settings"
-          title="Admin settings"
-        >
-          ⚙
-        </button>
+        {jamToken ? (
+          <div className="settings-btn">
+            <ProfileCircle name={name} avatarUrl={unlocked.avatar_url} size="sm" />
+            <span>Jamming on {unlocked.display_name || name}</span>
+          </div>
+        ) : (
+          <>
+            <button className="ghost settings-btn" onClick={() => setShowSettings(true)}>
+              <ProfileCircle name={name} avatarUrl={unlocked.avatar_url} size="sm" />
+              <span>{name}</span>
+            </button>
+            <button
+              type="button"
+              className="ghost icon-btn"
+              onClick={() => setShowAdminSettings(true)}
+              aria-label="Admin settings"
+              title="Admin settings"
+            >
+              ⚙
+            </button>
+          </>
+        )}
       </header>
 
       <div className="dashboard-body">
@@ -125,13 +185,7 @@ export default function SlotProfile() {
                 getRecentlyPlayed={getRecentlyPlayed}
                 onAdd={handleAdd}
                 onPlayNow={handlePlayNow}
-                relinkPrompt={
-                  <WebApiLinkFlow
-                    name={name}
-                    prompt="Recently played needs a fresh Spotify permission."
-                    onLinked={() => window.location.reload()}
-                  />
-                }
+                relinkPrompt={relinkPrompt("Recently played needs a fresh Spotify permission.")}
               />
               <PlaylistGrid
                 name={name}
@@ -142,13 +196,7 @@ export default function SlotProfile() {
                 onPlayNow={handlePlayNow}
                 onPlayPlaylist={handlePlayPlaylist}
                 onQueuePlaylist={handleQueuePlaylist}
-                relinkPrompt={
-                  <WebApiLinkFlow
-                    name={name}
-                    prompt="Playlists need a fresh Spotify permission."
-                    onLinked={() => window.location.reload()}
-                  />
-                }
+                relinkPrompt={relinkPrompt("Playlists need a fresh Spotify permission.")}
               />
               <AlbumLibrary
                 name={name}
@@ -156,13 +204,7 @@ export default function SlotProfile() {
                 getAlbumDetail={getAlbum}
                 onAdd={handleAdd}
                 onPlayNow={handlePlayNow}
-                relinkPrompt={
-                  <WebApiLinkFlow
-                    name={name}
-                    prompt="Your library needs a fresh Spotify permission to show saved albums."
-                    onLinked={() => window.location.reload()}
-                  />
-                }
+                relinkPrompt={relinkPrompt("Your library needs a fresh Spotify permission to show saved albums.")}
               />
             </>
           ) : (

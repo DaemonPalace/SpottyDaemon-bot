@@ -123,6 +123,13 @@ export default function AdminSettingsModal({ onClose }) {
         {field("SPOTIFY_CLIENT_SECRET", "Client secret")}
         {field("SPOTIFY_WEB_API_REDIRECT_URI", "Redirect URI")}
 
+        <h3>Public dashboard</h3>
+        <p className="hint">
+          Domain this dashboard is served on. When set, /jam posts an "Open dashboard" link anyone in the channel can use
+          without the slot password.
+        </p>
+        {field("PUBLIC_DASHBOARD_URL", "Public URL (e.g. https://music.example.com)")}
+
         <h3>Bot settings</h3>
         {field("MAX_SLOTS", "Max slots", { type: "number" })}
         {field("IDLE_SHUTDOWN_MINUTES", "Idle shutdown (minutes)", { type: "number" })}

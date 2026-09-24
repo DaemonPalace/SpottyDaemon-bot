@@ -44,16 +44,31 @@ if [ -z "${SKIP_SYSTEM_PACKAGES:-}" ]; then
       sudo apt-get clean
       ;;
     dnf)
-      sudo dnf install -y python3 python3-pip git gcc pkgconfig openssl-devel make rsync curl opus
+      DNF_PKGS="git gcc pkgconfig openssl-devel make rsync opus"
+      # Amazon Linux ships curl-minimal, which conflicts with the full curl
+      # package -- only ask for curl when nothing provides it yet.
+      command -v curl >/dev/null 2>&1 || DNF_PKGS="$DNF_PKGS curl"
+      # Amazon Linux 2023's python3 is 3.9 -- add 3.12 alongside it there.
+      if python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null; then
+        DNF_PKGS="$DNF_PKGS python3 python3-pip"
+      else
+        DNF_PKGS="$DNF_PKGS python3.12 python3.12-pip"
+      fi
+      sudo dnf install -y $DNF_PKGS
       sudo dnf clean packages
       ;;
   esac
 fi
 
-PYTHON_BIN="$(command -v python3)"
-PY_MINOR="$("$PYTHON_BIN" -c 'import sys; print(sys.version_info[1])')"
-if [ "$PY_MINOR" -lt 10 ]; then
-  echo "python3 is too old ($("$PYTHON_BIN" --version)) -- need >=3.10" >&2
+PYTHON_BIN=""
+for candidate in python3 python3.12 python3.11 python3.10; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+    PYTHON_BIN="$(command -v "$candidate")"
+    break
+  fi
+done
+if [ -z "$PYTHON_BIN" ]; then
+  echo "no python >=3.10 found (python3 is $(python3 --version 2>&1)) -- install one and re-run" >&2
   exit 1
 fi
 

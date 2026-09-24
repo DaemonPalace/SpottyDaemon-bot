@@ -20,8 +20,14 @@ if [ ! -d "$APP_DIR" ]; then
   exit 1
 fi
 
-echo "== pull latest =="
-git -C "$REPO_SRC" pull
+if [ -z "${UPDATE_SH_PULLED:-}" ]; then
+  echo "== pull latest =="
+  git -C "$REPO_SRC" pull
+  # Re-run the freshly pulled copy of this script. Bash keeps executing the
+  # already-open old file otherwise, so any step added by this very update
+  # (e.g. the libopus install below) would silently not run until next time.
+  UPDATE_SH_PULLED=1 exec "$REPO_SRC/update.sh" "$@"
+fi
 
 echo "== rebuild dashboard frontend =="
 cd "$REPO_SRC/frontend"

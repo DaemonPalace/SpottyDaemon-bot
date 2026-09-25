@@ -223,10 +223,16 @@ EOF
   sudo cp "$APP_DIR/systemd/caddy.service" /etc/systemd/system/
   sudo systemctl daemon-reload
   sudo systemctl enable --now caddy
-  sudo sed -i '/^PUBLIC_DASHBOARD_URL=/d' "$APP_DIR/.env"
-  echo "PUBLIC_DASHBOARD_URL=https://$DASHBOARD_DOMAIN_INPUT" | sudo tee -a "$APP_DIR/.env" >/dev/null
+  # The redirect URI switches Spotify linking to direct mode (no paste-back
+  # step) -- see bot/config.py's SPOTIFY_DIRECT_CALLBACK.
+  sudo sed -i '/^PUBLIC_DASHBOARD_URL=/d; /^SPOTIFY_WEB_API_REDIRECT_URI=/d' "$APP_DIR/.env"
+  printf 'PUBLIC_DASHBOARD_URL=https://%s\nSPOTIFY_WEB_API_REDIRECT_URI=https://%s/api/spotify/callback\n' \
+    "$DASHBOARD_DOMAIN_INPUT" "$DASHBOARD_DOMAIN_INPUT" | sudo tee -a "$APP_DIR/.env" >/dev/null
   echo "-> Caddyfile written for $DASHBOARD_DOMAIN_INPUT. Point its DNS A record at"
   echo "   this box and open inbound 80/443 before it can get a cert."
+  echo "-> For direct Spotify linking, add this Redirect URI to your app at"
+  echo "   developer.spotify.com and set SPOTIFY_CLIENT_ID:"
+  echo "     https://$DASHBOARD_DOMAIN_INPUT/api/spotify/callback"
 else
   echo "-> skipped -- point a domain at this box and re-run this script, or write"
   echo "   /etc/caddy/Caddyfile by hand and enable systemd/caddy.service."

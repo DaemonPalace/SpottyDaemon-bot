@@ -24,6 +24,7 @@ forwards (supervisor/proxy.py):
 
 import asyncio
 import hmac
+import html
 import logging
 import secrets
 import time
@@ -33,7 +34,7 @@ from aiohttp import web
 
 import spotify_player_api
 from commands import active_sessions_snapshot, do_delete_slot
-from config import API_HOST, API_PORT, API_TOKEN, MAX_SLOTS
+from config import API_HOST, API_PORT, API_TOKEN, MAX_SLOTS, SPOTIFY_DIRECT_CALLBACK
 from jam import JamManager
 from librespot_manager import LibrespotManager
 from slot_store import STATE_CLAIMED, SlotStore
@@ -91,6 +92,11 @@ class DiagnosticsApi:
         self.link_manager = link_manager
         self.web_api_link_manager = web_api_link_manager
         self.jam_manager = jam_manager
+        # Direct-callback outcomes for the dashboard to poll, by user_id; None
+        # while the callback is still finishing. Only "web:" ids -- Discord
+        # users see the outcome on the callback page itself.
+        # ponytail: an abandoned poll leaves its entry behind; a few bytes each.
+        self._callback_results: dict[str, tuple[str, bool] | None] = {}
         self._runner: web.AppRunner | None = None
 
         if not API_TOKEN:
@@ -136,6 +142,7 @@ class DiagnosticsApi:
         app.router.add_post("/api/slots/link/finish", self._link_finish)
         app.router.add_post("/api/slots/{name}/select", self._slot_select)
         app.router.add_get("/api/jam/{token}", self._jam_slot)
+        app.router.add_get("/api/spotify/callback", self._spotify_callback)
         app.router.add_delete("/api/slots/{name}", self._slot_delete)
         app.router.add_post("/api/slots/{name}/web-api-link/start", self._web_api_link_start)
         app.router.add_post("/api/slots/{name}/web-api-link/finish", self._web_api_link_finish)
@@ -246,7 +253,13 @@ class DiagnosticsApi:
         content, success = await self.link_manager.start_link(user_id, slot_name, password)
         authorize_url = self.link_manager.authorize_url(user_id)
         return web.json_response(
-            {"message": content, "success": success, "user_id": user_id, "authorize_url": authorize_url}
+            {
+                "message": content,
+                "success": success,
+                "user_id": user_id,
+                "authorize_url": authorize_url,
+                "direct": SPOTIFY_DIRECT_CALLBACK,
+            }
         )
 
     async def _link_finish(self, request: web.Request) -> web.Response:
@@ -255,8 +268,61 @@ class DiagnosticsApi:
         pasted_url = body.get("pasted_url")
         if not user_id:
             raise web.HTTPBadRequest(text="user_id is required")
+        if SPOTIFY_DIRECT_CALLBACK and not pasted_url:
+            return self._poll_callback(self.link_manager, user_id)
         content, success = await self.link_manager.finish_link(user_id, pasted_url)
         return web.json_response({"message": content, "success": success})
+
+    def _poll_callback(self, manager: LinkManager | WebApiLinkManager, user_id: str) -> web.Response:
+        """Direct mode's finish: the callback does the real work, the
+        dashboard just polls here until it has."""
+        if user_id in self._callback_results:
+            result = self._callback_results[user_id]
+            if result is not None:
+                del self._callback_results[user_id]
+                return web.json_response({"message": result[0], "success": result[1]})
+        elif manager.pending_slot_index(user_id) is None:
+            return web.json_response({"success": False, "message": "That login session expired -- start again."})
+        return web.json_response({"pending": True, "success": False, "message": "Waiting for Spotify login..."})
+
+    async def _spotify_callback(self, request: web.Request) -> web.Response:
+        """Public OAuth redirect target for direct mode (config.
+        SPOTIFY_DIRECT_CALLBACK) -- Spotify sends the browser here, via the
+        supervisor's /api proxy, after either /link or /link-web-api. The
+        OAuth state says which pending link it finishes."""
+        state = request.query.get("state", "")
+        user_id = self.link_manager.user_for_state(state)
+        manager = self.link_manager
+        if user_id is None:
+            user_id = self.web_api_link_manager.user_for_state(state)
+            manager = self.web_api_link_manager
+        if user_id is None:
+            return self._callback_page("That login link expired or was already used -- start linking again.", False)
+
+        slot_index = manager.pending_slot_index(user_id)
+        is_web = user_id.startswith("web:")
+        if is_web:
+            self._callback_results[user_id] = None
+        content, success = await manager.finish_link(user_id, str(request.url))
+        if success and slot_index is not None:
+            await self._seed_profile_info(slot_index)
+        if is_web:
+            self._callback_results[user_id] = (content, success)
+        return self._callback_page(content, success)
+
+    @staticmethod
+    def _callback_page(message: str, success: bool) -> web.Response:
+        heading = "Spotify linked" if success else "Spotify link failed"
+        return web.Response(
+            content_type="text/html",
+            text=(
+                "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+                f"<title>{heading}</title>"
+                "<body style='font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 16px'>"
+                f"<h2>{heading}</h2><p>{html.escape(message.replace('**', ''))}</p>"
+                "<p>You can close this tab.</p>"
+            ),
+        )
 
     async def _slot_select(self, request: web.Request) -> web.Response:
         """Verifies a slot's password without joining voice -- the web
@@ -319,13 +385,21 @@ class DiagnosticsApi:
         content, success = self.web_api_link_manager.start_link(user_id, meta.index)
         authorize_url = self.web_api_link_manager.authorize_url(user_id)
         return web.json_response(
-            {"message": content, "success": success, "user_id": user_id, "authorize_url": authorize_url}
+            {
+                "message": content,
+                "success": success,
+                "user_id": user_id,
+                "authorize_url": authorize_url,
+                "direct": SPOTIFY_DIRECT_CALLBACK,
+            }
         )
 
     async def _web_api_link_finish(self, request: web.Request) -> web.Response:
         body = await request.json()
         user_id = body.get("user_id", "")
         pasted_url = body.get("pasted_url", "")
+        if user_id and SPOTIFY_DIRECT_CALLBACK and not pasted_url:
+            return self._poll_callback(self.web_api_link_manager, user_id)
         if not user_id or not pasted_url:
             raise web.HTTPBadRequest(text="user_id and pasted_url are required")
         slot_index = self.web_api_link_manager.pending_slot_index(user_id)

@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { finishLink, startLink } from "../api/client";
+import useLinkPolling from "../hooks/useLinkPolling";
 import Modal from "./Modal";
 
 /** Registration + Spotify-linking flow for a brand new profile, in one
- * popup: start -> waiting-login -> done. Mirrors /link's Discord-side UX
- * (paste the failed-redirect url back) since there's no public HTTPS
- * endpoint here to catch the OAuth redirect directly. */
+ * popup: start -> waiting-login -> done. With a public domain configured
+ * (data.direct) Spotify redirects to the bot's own callback and this just
+ * waits for it; otherwise it mirrors /link's Discord-side UX (paste the
+ * failed-redirect url back). */
 export default function CreateProfileModal({ onClose, onCreated }) {
   const [step, setStep] = useState("start");
   const [slotName, setSlotName] = useState("");
@@ -14,8 +16,19 @@ export default function CreateProfileModal({ onClose, onCreated }) {
   const [authorizeUrl, setAuthorizeUrl] = useState(null);
   const [pastedUrl, setPastedUrl] = useState("");
   const [userId, setUserId] = useState(null);
+  const [direct, setDirect] = useState(false);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
+
+  useLinkPolling(step === "waiting-login" && direct, () => finishLink(userId, null), (data) => {
+    if (data.success) {
+      setStep("done");
+      onCreated();
+    } else {
+      setError(data.message);
+      setStep("start");
+    }
+  });
 
   async function handleStart(e) {
     e.preventDefault();
@@ -31,6 +44,7 @@ export default function CreateProfileModal({ onClose, onCreated }) {
       setAuthorizeMessage(data.message);
       setAuthorizeUrl(data.authorize_url);
       setUserId(data.user_id);
+      setDirect(Boolean(data.direct));
       setStep("waiting-login");
     } catch (err) {
       if (newTab) newTab.close();
@@ -76,7 +90,22 @@ export default function CreateProfileModal({ onClose, onCreated }) {
         </form>
       )}
 
-      {step === "waiting-login" && (
+      {step === "waiting-login" && direct && (
+        <div className="form">
+          <h3>Link Spotify</h3>
+          <p className="hint">{authorizeMessage}</p>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => window.open(authorizeUrl, "_blank", "noopener,noreferrer")}
+          >
+            Open Spotify login again
+          </button>
+          <p className="hint">Waiting for Spotify...</p>
+        </div>
+      )}
+
+      {step === "waiting-login" && !direct && (
         <form onSubmit={handleFinish} className="form">
           <h3>Link Spotify</h3>
           <p className="hint">{authorizeMessage}</p>

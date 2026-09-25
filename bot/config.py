@@ -83,8 +83,19 @@ SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 # Optional -- only needed if the app is registered as a confidential client;
 # a PKCE public client doesn't require one.
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
-SPOTIFY_WEB_API_REDIRECT_URI = os.environ.get(
-    "SPOTIFY_WEB_API_REDIRECT_URI", "http://127.0.0.1:5589/callback"
+SPOTIFY_WEB_API_REDIRECT_URI = os.environ.get("SPOTIFY_WEB_API_REDIRECT_URI") or (
+    f"{PUBLIC_DASHBOARD_URL}/api/spotify/callback" if PUBLIC_DASHBOARD_URL else "http://127.0.0.1:5589/callback"
+)
+# Direct linking: Spotify redirects the browser straight back to this bot's
+# public callback (bot/api.py's _spotify_callback), so neither /link nor
+# /link-web-api needs the copy-the-failed-url-back step. Needs our own
+# Spotify app (SPOTIFY_CLIENT_ID) with the callback registered on it -- the
+# supervisor/install.sh set SPOTIFY_WEB_API_REDIRECT_URI to it whenever the
+# domain is entered. Anything else keeps the paste-back flow.
+SPOTIFY_DIRECT_CALLBACK = bool(
+    SPOTIFY_CLIENT_ID
+    and PUBLIC_DASHBOARD_URL
+    and SPOTIFY_WEB_API_REDIRECT_URI == f"{PUBLIC_DASHBOARD_URL}/api/spotify/callback"
 )
 
 LIBRESPOT_BIN = os.environ.get("LIBRESPOT_BIN", "librespot")

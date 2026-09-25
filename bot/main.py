@@ -18,7 +18,7 @@ from commands import (
     forget_session,
     resolve_jam_slot,
 )
-from config import DEV_GUILD_ID, DISCORD_TOKEN, HOST_CONTROLLER, INTERACTIONS_QUEUE_URL, SLOTS
+from config import DEV_GUILD_ID, DISCORD_TOKEN, HOST_CONTROLLER, INTERACTIONS_QUEUE_URL, SLOTS, SPOTIFY_DIRECT_CALLBACK
 from host_control import build_host_controller
 from idle_monitor import IdleMonitor
 from interaction_relay import InteractionRelay
@@ -103,13 +103,18 @@ class LinkStartView(discord.ui.View):
     interaction_relay.py's module docstring). Under the relay there's no
     way to answer a fresh button click with a modal from here, so it's
     swapped for a disabled hint instead; the plain fallback_command still
-    works either way (interaction_relay.py handles it directly)."""
+    works either way (interaction_relay.py handles it directly).
+
+    In direct mode (SPOTIFY_DIRECT_CALLBACK) there's nothing to paste --
+    Spotify redirects to the bot's own callback -- so just the login button."""
 
     def __init__(self, authorize_url: str, modal_title: str, on_finish_callback, fallback_command: str):
         super().__init__(timeout=900)
         self.add_item(
             discord.ui.Button(label="Log in with Spotify", style=discord.ButtonStyle.link, url=authorize_url)
         )
+        if SPOTIFY_DIRECT_CALLBACK:
+            return
         if INTERACTIONS_QUEUE_URL:
             self.add_item(
                 discord.ui.Button(

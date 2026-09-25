@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { finishWebApiLink, startWebApiLink } from "../api/client";
+import useLinkPolling from "../hooks/useLinkPolling";
 
 /** Drives /link-web-api's web equivalent for one slot. Used both for the
  * initial "no Web API link yet" case and for re-linking to pick up a newer
@@ -9,14 +10,25 @@ import { finishWebApiLink, startWebApiLink } from "../api/client";
  * tab (via a blank tab grabbed synchronously in the click handler, so
  * popup blockers don't eat it once the url arrives after the await) and
  * reveals the paste-back dialog for step two, instead of asking for two
- * separate clicks. */
+ * separate clicks. With a public domain configured (data.direct), step two
+ * is just waiting for the bot's own callback instead of a paste-back. */
 export default function WebApiLinkFlow({ name, prompt, onLinked }) {
   const [step, setStep] = useState("start");
   const [message, setMessage] = useState("");
   const [authorizeUrl, setAuthorizeUrl] = useState(null);
   const [pastedUrl, setPastedUrl] = useState("");
   const [userId, setUserId] = useState(null);
+  const [direct, setDirect] = useState(false);
   const [error, setError] = useState(null);
+
+  useLinkPolling(step === "finish" && direct, () => finishWebApiLink(name, userId, ""), (data) => {
+    if (data.success) {
+      onLinked();
+    } else {
+      setError(data.message);
+      setStep("start");
+    }
+  });
 
   async function handleStart() {
     setError(null);
@@ -28,6 +40,7 @@ export default function WebApiLinkFlow({ name, prompt, onLinked }) {
       setMessage(data.message);
       setAuthorizeUrl(data.authorize_url);
       setUserId(data.user_id);
+      setDirect(Boolean(data.direct));
       setStep("finish");
     } catch (err) {
       if (newTab) newTab.close();
@@ -57,12 +70,26 @@ export default function WebApiLinkFlow({ name, prompt, onLinked }) {
     );
   }
 
+  const reopenButton = (
+    <button type="button" className="ghost" onClick={() => window.open(authorizeUrl, "_blank", "noopener,noreferrer")}>
+      Open Spotify login again
+    </button>
+  );
+
+  if (direct) {
+    return (
+      <div className="link-flow">
+        <p className="hint">{message}</p>
+        {reopenButton}
+        <p className="hint">Waiting for Spotify...</p>
+      </div>
+    );
+  }
+
   return (
     <form onSubmit={handleFinish} className="form link-flow">
       <p className="hint">{message}</p>
-      <button type="button" className="ghost" onClick={() => window.open(authorizeUrl, "_blank", "noopener,noreferrer")}>
-        Open Spotify login again
-      </button>
+      {reopenButton}
       <label>
         Redirect URL
         <input value={pastedUrl} onChange={(e) => setPastedUrl(e.target.value)} required />

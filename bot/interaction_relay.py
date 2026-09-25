@@ -55,7 +55,7 @@ from commands import (
     do_search_tracks,
     resolve_jam_slot,
 )
-from config import AWS_REGION, INTERACTIONS_QUEUE_URL
+from config import AWS_REGION, INTERACTIONS_QUEUE_URL, SPOTIFY_DIRECT_CALLBACK
 from jam import JamManager
 from librespot_manager import LibrespotManager
 from slot_store import SlotStore
@@ -84,16 +84,12 @@ def _link_start_components(authorize_url: str, paste_flow: str) -> list[dict]:
     interaction generated -- safe to send with no live Interaction behind
     it) plus a "Paste redirect URL" button whose click Lambda answers with
     a MODAL directly (custom_id "paste-finish:<paste_flow>" once
-    submitted, see this module's docstring)."""
-    return [
-        {
-            "type": 1,
-            "components": [
-                {"type": 2, "style": 5, "label": "Log in with Spotify", "url": authorize_url},
-                {"type": 2, "style": 1, "label": "Paste redirect URL", "custom_id": f"paste:{paste_flow}"},
-            ],
-        }
-    ]
+    submitted, see this module's docstring). Direct mode drops the paste
+    button -- Spotify redirects to the bot's own callback instead."""
+    buttons = [{"type": 2, "style": 5, "label": "Log in with Spotify", "url": authorize_url}]
+    if not SPOTIFY_DIRECT_CALLBACK:
+        buttons.append({"type": 2, "style": 1, "label": "Paste redirect URL", "custom_id": f"paste:{paste_flow}"})
+    return [{"type": 1, "components": buttons}]
 
 
 def _track_result_components(results: list[dict]) -> list[dict]:

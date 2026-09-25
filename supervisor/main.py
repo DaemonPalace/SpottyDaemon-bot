@@ -38,7 +38,14 @@ SETTINGS_FIELDS = [
 ]
 # Changing these needs the bot process restarted to take effect (env vars
 # are only read at bot/main.py's startup import time).
-RESTART_ON_CHANGE = {"DISCORD_TOKEN", "MAX_SLOTS", "PUBLIC_DASHBOARD_URL"}
+RESTART_ON_CHANGE = {
+    "DISCORD_TOKEN",
+    "MAX_SLOTS",
+    "PUBLIC_DASHBOARD_URL",
+    "SPOTIFY_CLIENT_ID",
+    "SPOTIFY_CLIENT_SECRET",
+    "SPOTIFY_WEB_API_REDIRECT_URI",
+}
 
 
 async def _status(request: web.Request) -> web.Response:
@@ -120,6 +127,8 @@ async def _update_settings(request: web.Request) -> web.Response:
     env_file.set_env_values(values)
 
     restarted = False
+    # set_env_values may also have set SPOTIFY_WEB_API_REDIRECT_URI -- but
+    # only alongside PUBLIC_DASHBOARD_URL, which restarts anyway.
     if RESTART_ON_CHANGE & values.keys() and admin_store.is_configured():
         await bot_process.restart()
         restarted = True

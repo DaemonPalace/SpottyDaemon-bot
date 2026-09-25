@@ -118,7 +118,10 @@ export default function AdminSettingsModal({ onClose }) {
         {field("DISCORD_TOKEN", "Bot token")}
 
         <h3>Spotify Web API</h3>
-        <p className="hint">Now-playing, queue, search, playlists, library. Register an app at developer.spotify.com.</p>
+        <p className="hint">
+          Now-playing, queue, search, playlists, library. Register an app at developer.spotify.com and add the Redirect
+          URI below to it.
+        </p>
         {field("SPOTIFY_CLIENT_ID", "Client ID")}
         {field("SPOTIFY_CLIENT_SECRET", "Client secret")}
         {field("SPOTIFY_WEB_API_REDIRECT_URI", "Redirect URI")}
@@ -126,7 +129,8 @@ export default function AdminSettingsModal({ onClose }) {
         <h3>Public dashboard</h3>
         <p className="hint">
           Domain this dashboard is served on. When set, /jam posts an "Open dashboard" link anyone in the channel can use
-          without the slot password.
+          without the slot password, and the Redirect URI above is set to its callback so Spotify linking finishes on
+          its own (no pasting urls back).
         </p>
         {field("PUBLIC_DASHBOARD_URL", "Public URL (e.g. https://music.example.com)")}
 

@@ -7,16 +7,13 @@ guarantee (and today, no evidence) that it covers Web API scopes like
 user-modify-playback-state, so this runs a standard Authorization Code +
 PKCE flow against the bot's OWN registered Spotify app instead.
 
-UX mirrors /link's "paste the failed redirect back" shape (see
-spotify_link.py's module docstring for why: no public HTTPS endpoint is
-assumed), but the mechanics are simpler here -- there's no local subprocess
-to replay the request to. The bot itself calls Spotify's token endpoint
-directly over aiohttp.
-
-A real listen-and-catch-the-redirect flow (no paste-back step) is the
-natural upgrade once there's a real local HTTP server to receive it (see the
-Phase 4 standalone app) -- out of scope while this is still Discord-command
-driven.
+With a public domain configured (config.SPOTIFY_DIRECT_CALLBACK), Spotify
+redirects straight to bot/api.py's _spotify_callback, which hands the url to
+finish_link itself. Without one, UX mirrors /link's "paste the failed
+redirect back" shape (see spotify_link.py's module docstring), but the
+mechanics are simpler here -- there's no local subprocess to replay the
+request to. The bot itself calls Spotify's token endpoint directly over
+aiohttp either way.
 """
 
 import base64
@@ -55,26 +52,26 @@ PENDING_TIMEOUT_SECONDS = 600
 _EXPIRY_SAFETY_MARGIN_SECONDS = 60
 
 
-def _generate_pkce_pair() -> tuple[str, str]:
+def generate_pkce_pair() -> tuple[str, str]:
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(64)).rstrip(b"=").decode()
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
     return verifier, challenge
 
 
-def _build_authorize_url(state: str, code_challenge: str) -> str:
+def build_authorize_url(state: str, code_challenge: str, scopes: str = SCOPES) -> str:
     params = {
         "client_id": config.SPOTIFY_CLIENT_ID,
         "response_type": "code",
         "redirect_uri": config.SPOTIFY_WEB_API_REDIRECT_URI,
         "state": state,
-        "scope": SCOPES,
+        "scope": scopes,
         "code_challenge_method": "S256",
         "code_challenge": code_challenge,
     }
     return f"{AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
 
 
-async def _exchange_code(code: str, code_verifier: str) -> dict:
+async def exchange_code(code: str, code_verifier: str) -> dict:
     data = {
         "grant_type": "authorization_code",
         "code": code,
@@ -148,6 +145,11 @@ class WebApiLinkManager:
         pending = self._pending.get(user_id)
         return pending.url if pending is not None else None
 
+    def user_for_state(self, state: str) -> str | None:
+        """Which pending link a direct callback (bot/api.py's
+        _spotify_callback) belongs to -- the OAuth state is its only key."""
+        return next((u for u, p in self._pending.items() if p.state == state), None)
+
     def start_link(self, user_id: str, slot_index: int) -> tuple[str, bool]:
         if not config.SPOTIFY_CLIENT_ID:
             return (
@@ -155,12 +157,18 @@ class WebApiLinkManager:
                 "Ask the bot owner to register an app at developer.spotify.com.",
                 False,
             )
-        verifier, challenge = _generate_pkce_pair()
+        verifier, challenge = generate_pkce_pair()
         state = secrets.token_urlsafe(16)
-        url = _build_authorize_url(state, challenge)
+        url = build_authorize_url(state, challenge)
         self._pending[user_id] = _PendingWebApiLink(
             slot_index=slot_index, code_verifier=verifier, state=state, started_at=time.monotonic(), url=url
         )
+        if config.SPOTIFY_DIRECT_CALLBACK:
+            return (
+                "Log in with Spotify using the button below -- it finishes on its own once you "
+                f"approve, within {PENDING_TIMEOUT_SECONDS // 60} minutes.",
+                True,
+            )
         return (
             "Log in with Spotify using the button below. Your browser will fail to load the page "
             "it redirects to next -- that's expected. Copy the FULL url from your browser's "
@@ -193,7 +201,7 @@ class WebApiLinkManager:
             return "That link doesn't match your pending request -- run /link-web-api again.", False
 
         try:
-            token_response = await _exchange_code(code, pending.code_verifier)
+            token_response = await exchange_code(code, pending.code_verifier)
         except Exception:
             log.exception("web api token exchange failed")
             self._pending.pop(user_id, None)

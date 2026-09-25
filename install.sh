@@ -236,6 +236,14 @@ EOF
 else
   echo "-> skipped -- point a domain at this box and re-run this script, or write"
   echo "   /etc/caddy/Caddyfile by hand and enable systemd/caddy.service."
+  # No domain = no TLS proxy, so the dashboard is localhost-only unless it
+  # binds all interfaces itself. Plain HTTP -- only for a trusted network.
+  read -r -p "Expose the dashboard on all interfaces (plain HTTP, private network only)? [y/N] " LAN_ANSWER
+  if [ "${LAN_ANSWER:-n}" = "y" ] || [ "${LAN_ANSWER:-n}" = "Y" ]; then
+    sudo sed -i '/^SUPERVISOR_HOST=/d' "$APP_DIR/.env"
+    echo 'SUPERVISOR_HOST=0.0.0.0' | sudo tee -a "$APP_DIR/.env" >/dev/null
+    echo "-> dashboard will listen on http://<this box's IP>:8080"
+  fi
 fi
 
 echo

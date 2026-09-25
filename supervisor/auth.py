@@ -66,10 +66,14 @@ def is_admin(request: web.Request) -> bool:
     return bool(cookie_value) and admin_store.is_configured() and _verify(cookie_value)
 
 
-def issue_cookie(response: web.StreamResponse) -> None:
+def issue_cookie(request: web.Request, response: web.StreamResponse) -> None:
+    # Secure only when the browser is on HTTPS (directly, or via Caddy's
+    # X-Forwarded-Proto) -- browsers drop Secure cookies set over plain HTTP,
+    # which would break login on a no-domain LAN install (SUPERVISOR_HOST=0.0.0.0).
+    secure = request.secure or request.headers.get("X-Forwarded-Proto") == "https"
     expiry = int(time.time()) + SESSION_LIFETIME_SECONDS
     response.set_cookie(
-        COOKIE_NAME, _sign(expiry), httponly=True, samesite="Lax", secure=True, max_age=SESSION_LIFETIME_SECONDS
+        COOKIE_NAME, _sign(expiry), httponly=True, samesite="Lax", secure=secure, max_age=SESSION_LIFETIME_SECONDS
     )
 
 
@@ -92,5 +96,5 @@ async def session_middleware(request: web.Request, handler):
     # expiring, so an admin actively using the UI is never logged out.
     expiry = int(cookie_value.split(".", 1)[0])
     if expiry - time.time() < REISSUE_THRESHOLD_SECONDS:
-        issue_cookie(response)
+        issue_cookie(request, response)
     return response

@@ -95,7 +95,7 @@ async def _login(request: web.Request) -> web.Response:
     if not admin_store.verify_password(password):
         raise web.HTTPUnauthorized(text="wrong password")
     response = web.json_response({"logged_in": True})
-    auth.issue_cookie(response)
+    auth.issue_cookie(request, response)
     return response
 
 

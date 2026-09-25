@@ -5,10 +5,10 @@ rest of the playing playlist/album.
 Spotify's Web API can read the queue and append to it -- no reorder, no
 remove -- so every song added from the dashboard or Discord lands in Up
 next first, where it can be reordered or removed. The bot keeps exactly
-one Up-next song "staged" in Spotify's real queue and hands over the next
-one once that's no longer waiting there, so the Spotify app always sees a
-real next track and anything queued from the app still plays (ahead of
-the rest of Up next).
+Up-next song "staged" in Spotify's real queue at a time, handed over only
+when nothing queued from the app is ahead of it and the current song is
+about to end (HANDOFF_MS) -- until then it stays reorderable here.
+Anything queued from the app plays ahead of the rest of Up next.
 
 Spotify's queue response doesn't say which entries were queued and which
 are just the upcoming context, so QueueTracker infers it by diffing
@@ -31,7 +31,10 @@ from spotify_web_api import WebApiLinkManager
 log = logging.getLogger("up_next")
 
 UP_NEXT_PATH = os.environ.get("UP_NEXT_PATH", os.path.join(LIBRESPOT_CACHE_DIR, "up_next.json"))
-POLL_SECONDS = 5
+POLL_SECONDS = 3
+# Hand the next Up-next song to Spotify once the current song has this
+# little left -- several polls' worth, so a slow poll can't miss it.
+HANDOFF_MS = 15_000
 # A pushed song that never shows up in Spotify's queue (the add silently
 # didn't stick) stops being waited on after this many snapshots.
 PENDING_MAX_OBSERVATIONS = 3
@@ -63,7 +66,8 @@ class QueueTracker:
     reads as playlist. A song that happens to open both the old and the
     new playlist can be misread as queued on a switch."""
 
-    def __init__(self):
+    def __init__(self, label: str = ""):
+        self.label = label  # TEMP-DIAG: slot name in the diagnostic logs
         self.context_key = None
         self.current_uri = None
         self.window: list[str] = []
@@ -92,31 +96,54 @@ class QueueTracker:
                 # Plain advance: the head of the old queue is now playing.
                 old_window = old_window[1:]
                 if old_front and old_front[0][0] == current_uri:
+                    log.info("[UPNEXT-DIAG] %s: queued %s started playing", self.label, current_uri)  # TEMP-DIAG
                     old_front = old_front[1:]
             else:
                 trusted = False
+                log.info("[UPNEXT-DIAG] %s: jump %s -> %s, no baseline this snapshot", self.label, self.current_uri, current_uri)  # TEMP-DIAG
+        if context_switched:
+            log.info("[UPNEXT-DIAG] %s: context switch %s -> %s", self.label, self.context_key, context_key)  # TEMP-DIAG
 
-        # Keep known queued songs that are still at the head, in order;
-        # one that's gone was removed in the app (or played while unseen).
-        front, i = [], 0
+        # The queued block is the head run of songs that are either already
+        # known to be queued (matched by content, not position -- so a song
+        # inserted above them, or reordering them in the app, keeps them
+        # all), the bot's own pushes, or newly queued ones.
+        known = Counter(uri for uri, _ in old_front)
+        sources: dict[str, list[str]] = {}
         for uri, source in old_front:
-            if i < len(window) and window[i] == uri:
-                front.append((uri, source))
-                survivors[uri] -= 1
-                i += 1
-
+            sources.setdefault(uri, []).append(source)
         added = Counter(window) - Counter(old_window)
-        # A song the bot itself pushed is claimed even without a trusted
-        # baseline -- the bot knows it queued it.
-        while i < len(window) and (
-            (trusted and added[window[i]] > 0) or survivors[window[i]] > 0 or window[i] in self.pending_bot
-        ):
+        front, i = [], 0
+        while i < len(window):
             uri = window[i]
-            added[uri] -= 1
-            survivors[uri] -= 1
-            source = BOT if self.pending_bot.pop(uri, None) is not None else APP
+            if known[uri] > 0:
+                known[uri] -= 1
+                survivors[uri] -= 1
+                source = sources[uri].pop(0)
+            elif uri in self.pending_bot:  # the bot knows it queued it -- no baseline needed
+                del self.pending_bot[uri]
+                source = BOT
+                log.info("[UPNEXT-DIAG] %s: %s handed-over Up next song showed up in Spotify's queue", self.label, uri)  # TEMP-DIAG
+            elif trusted and added[uri] > 0:
+                added[uri] -= 1
+                source = APP
+                log.info("[UPNEXT-DIAG] %s: %s -> Queued (new copy at head, pos %d)", self.label, uri, i)  # TEMP-DIAG
+            elif survivors[uri] > 0:
+                survivors[uri] -= 1
+                source = APP
+                log.info("[UPNEXT-DIAG] %s: %s -> Queued (survived context switch, pos %d)", self.label, uri, i)  # TEMP-DIAG
+            else:
+                break
             front.append((uri, source))
             i += 1
+
+        for uri, count in known.items():  # TEMP-DIAG: whatever wasn't re-matched lost its Queued status
+            for _ in range(count):
+                where = "back to Playlist" if uri in window else "left the queue"
+                log.info(
+                    "[UPNEXT-DIAG] %s: %s declassified -> %s (head now %s, current %s, trusted=%s)",
+                    self.label, uri, where, window[: i + 3], current_uri, trusted,
+                )
 
         for uri in list(self.pending_bot):
             self.pending_bot[uri] += 1
@@ -218,7 +245,7 @@ class UpNextManager:
             state = self._slot_state(slot_index)
             tracker = self._trackers.get(slot_index)
             if tracker is None:
-                tracker = self._trackers[slot_index] = QueueTracker()
+                tracker = self._trackers[slot_index] = QueueTracker(f"slot{slot_index}")
                 if state["staged"] is not None:  # staged before a restart -- still ours
                     tracker.expect_bot(state["staged"]["track"]["uri"])
             queued = [t for t in (queue or {}).get("queue", []) if t and t.get("uri")]
@@ -230,10 +257,23 @@ class UpNextManager:
             tracker.observe(context_key, current, [t["uri"] for t in queued])
 
             if state["staged"] is not None and not tracker.bot_waiting():
+                log.info("[UPNEXT-DIAG] slot%s: handed-over %s is playing / gone", slot_index, state["staged"]["track"]["uri"])  # TEMP-DIAG
                 state["staged"] = None  # it's playing now (or was removed in the app)
                 self._save()
-            if state["staged"] is None and state["entries"] and current is not None:
+            item = (now_playing or {}).get("item") or {}
+            remaining_ms = (item.get("duration_ms") or 0) - ((now_playing or {}).get("progress_ms") or 0)
+            # Hand over only at the last moment -- nothing queued from the app
+            # still ahead of it and the current song about to end -- so the
+            # song stays reorderable/removable in Up next as long as possible.
+            if (
+                state["staged"] is None
+                and state["entries"]
+                and current is not None
+                and not tracker.front
+                and remaining_ms <= HANDOFF_MS
+            ):
                 entry = state["entries"][0]
+                log.info("[UPNEXT-DIAG] slot%s: handing %s to Spotify (%d ms left)", slot_index, entry["track"]["uri"], remaining_ms)  # TEMP-DIAG
                 try:
                     await spotify_player_api.add_to_queue(token, entry["track"]["uri"])
                 except Exception:

@@ -67,4 +67,17 @@ t.observe(CTX, "c0", ["x", "p1"])
 t.observe(("spotify:album:a", False), "c0", ["x", "a1", "a2"])
 assert t.front == [("x", APP)], t.front
 
+# A queued song the tracker missed (it was already there at the first
+# snapshot) is recovered on a switch: it survives, the playlist doesn't.
+t = tracker_at("c0", ["x", "y", "p1", "p2"])
+t.observe(("spotify:album:a", False), "a0", ["x", "y", "a1", "a2"])
+assert t.front == [("x", APP), ("y", APP)], t.front
+
+# Shuffle toggle reshuffles the playlist -- only the queued head survives
+# at the head.
+t = tracker_at("c0", ["p1", "p2", "p3"])
+t.observe(CTX, "c0", ["x", "p1", "p2"])
+t.observe(("spotify:playlist:p", True), "c0", ["x", "p7", "p3"])
+assert t.front == [("x", APP)], t.front
+
 print("up next checks passed")

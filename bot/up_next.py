@@ -53,10 +53,15 @@ class QueueTracker:
     queueing. Songs entering at the tail as the window slides forward
     aren't after the front, so they're ignored too.
 
-    Known blind spots: after a context change, a shuffle toggle, a jump
-    that isn't a plain advance to the next song, or the very first
-    snapshot, there's no trustworthy baseline -- detection pauses for that
-    one snapshot and anything queued in that gap reads as playlist."""
+    A context switch (new playlist/album, shuffle toggle) is its own
+    signal: head songs that survive it are queued, which also recovers
+    queued songs the tracker had missed (e.g. queued before a restart).
+
+    Known blind spots: a song queued in the same gap as a context switch,
+    a jump that isn't a plain advance to the next song, and the very first
+    snapshot have no trustworthy baseline -- anything queued right then
+    reads as playlist. A song that happens to open both the old and the
+    new playlist can be misread as queued on a switch."""
 
     def __init__(self):
         self.context_key = None
@@ -75,6 +80,12 @@ class QueueTracker:
 
     def observe(self, context_key, current_uri: str | None, window: list[str]) -> None:
         old_window, old_front = self.window, self.front
+        # Switching playlist/album (or toggling shuffle) replaces the whole
+        # upcoming context but leaves the queued block at the head -- so
+        # a head song that was also in the previous snapshot survived the
+        # switch, which only queued songs do.
+        context_switched = context_key != self.context_key and self.current_uri is not None
+        survivors = Counter(old_window) if context_switched else Counter()
         trusted = context_key == self.context_key and self.current_uri is not None
         if current_uri != self.current_uri:
             if old_window and old_window[0] == current_uri:
@@ -91,14 +102,18 @@ class QueueTracker:
         for uri, source in old_front:
             if i < len(window) and window[i] == uri:
                 front.append((uri, source))
+                survivors[uri] -= 1
                 i += 1
 
         added = Counter(window) - Counter(old_window)
         # A song the bot itself pushed is claimed even without a trusted
         # baseline -- the bot knows it queued it.
-        while i < len(window) and ((trusted and added[window[i]] > 0) or window[i] in self.pending_bot):
+        while i < len(window) and (
+            (trusted and added[window[i]] > 0) or survivors[window[i]] > 0 or window[i] in self.pending_bot
+        ):
             uri = window[i]
             added[uri] -= 1
+            survivors[uri] -= 1
             source = BOT if self.pending_bot.pop(uri, None) is not None else APP
             front.append((uri, source))
             i += 1

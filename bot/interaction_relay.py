@@ -61,6 +61,7 @@ from librespot_manager import LibrespotManager
 from slot_store import SlotStore
 from spotify_link import LinkManager
 from spotify_web_api import WebApiLinkManager
+from up_next import UpNextManager
 
 log = logging.getLogger("interaction_relay")
 
@@ -123,8 +124,10 @@ class InteractionRelay:
         link_manager: LinkManager,
         web_api_link_manager: WebApiLinkManager,
         jam_manager: JamManager,
+        up_next: UpNextManager,
     ):
         self.client = client
+        self.up_next = up_next
         self.librespot = librespot
         self.store = store
         self.link_manager = link_manager
@@ -341,7 +344,7 @@ class InteractionRelay:
         if custom_id.startswith("play-track:"):
             _, mode, track_uri = custom_id.split(":", 2)
             content, _ephemeral = await do_play_track(
-                guild.id, track_uri, mode, self.store, self.web_api_link_manager, self.librespot
+                guild.id, track_uri, mode, self.store, self.web_api_link_manager, self.librespot, self.up_next
             )
             await self._edit_original_clear(interaction, content)
             await self.jam_manager.repost(guild.id)

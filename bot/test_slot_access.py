@@ -38,7 +38,7 @@ class StubJam:
 
 async def main():
     store = StubStore()
-    diag = api.DiagnosticsApi(None, None, store, None, None, StubJam())
+    diag = api.DiagnosticsApi(None, None, store, None, None, StubJam(), None)
 
     async def ok(request):
         from aiohttp import web

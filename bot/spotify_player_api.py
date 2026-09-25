@@ -89,6 +89,19 @@ async def get_album(access_token: str, album_id: str) -> dict:
             return await resp.json()
 
 
+async def get_track(access_token: str, track_uri: str) -> dict:
+    track_id = track_uri.rsplit(":", 1)[-1]
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{API_BASE}/tracks/{track_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status >= 300:
+                raise RuntimeError(f"get_track failed ({resp.status}): {await resp.text()}")
+            return await resp.json()
+
+
 async def add_to_queue(access_token: str, track_uri: str) -> None:
     async with aiohttp.ClientSession() as session:
         async with session.post(

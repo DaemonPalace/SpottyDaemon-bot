@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   addToQueue,
+  moveUpNext,
+  removeUpNext,
   getAlbum,
   getJamSlot,
   getLibraryAlbums,
@@ -109,6 +111,16 @@ export default function SlotProfile() {
     refresh();
   }
 
+  async function handleMoveUpNext(id, to) {
+    await moveUpNext(name, id, to).catch(() => {}); // entry got staged meanwhile -- refresh shows why
+    refresh();
+  }
+
+  async function handleRemoveUpNext(id) {
+    await removeUpNext(name, id).catch(() => {});
+    refresh();
+  }
+
   async function handlePlayNow(uri) {
     await playTrack(name, uri);
     refresh();
@@ -173,7 +185,11 @@ export default function SlotProfile() {
 
       <div className="dashboard-body">
         <aside className="dashboard-queue">
-          <QueueList queue={queue} />
+          <QueueList
+            queue={queue}
+            onMove={jamToken ? undefined : handleMoveUpNext}
+            onRemove={jamToken ? undefined : handleRemoveUpNext}
+          />
         </aside>
 
         <main className="dashboard-main">

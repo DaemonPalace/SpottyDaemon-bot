@@ -27,6 +27,7 @@ from librespot_manager import LibrespotManager
 from slot_store import SlotStore
 from spotify_link import LinkManager
 from spotify_web_api import WebApiLinkManager
+from up_next import UpNextManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("bot")
@@ -44,11 +45,14 @@ web_api_link_manager = WebApiLinkManager(slot_store)
 host_controller = build_host_controller(HOST_CONTROLLER)
 idle_monitor = IdleMonitor(client, slot_store, host_controller)
 jam_manager = JamManager(slot_store, web_api_link_manager, librespot)
-diagnostics_api = DiagnosticsApi(client, librespot, slot_store, link_manager, web_api_link_manager, jam_manager)
+up_next = UpNextManager(slot_store, web_api_link_manager)
+diagnostics_api = DiagnosticsApi(
+    client, librespot, slot_store, link_manager, web_api_link_manager, jam_manager, up_next
+)
 # None when no Lambda/SQS relay is configured -- the gateway CommandTree
 # below is then the one and only command path (self-host/standalone default).
 interaction_relay = (
-    InteractionRelay(client, librespot, slot_store, link_manager, web_api_link_manager, jam_manager)
+    InteractionRelay(client, librespot, slot_store, link_manager, web_api_link_manager, jam_manager, up_next)
     if INTERACTIONS_QUEUE_URL
     else None
 )
@@ -228,7 +232,7 @@ class TrackResultsView(discord.ui.View):
     def _make_callback(self, guild_id: int, track_uri: str, mode: str):
         async def callback(interaction: discord.Interaction) -> None:
             content, ephemeral = await do_play_track(
-                guild_id, track_uri, mode, slot_store, web_api_link_manager, librespot
+                guild_id, track_uri, mode, slot_store, web_api_link_manager, librespot, up_next
             )
             await interaction.response.edit_message(content=content, view=None)
             await jam_manager.repost(guild_id)
@@ -369,6 +373,7 @@ async def on_ready():
     if interaction_relay is not None:
         interaction_relay.start()
     link_manager.start()
+    up_next.start()
     diagnostics_api.start()
 
 

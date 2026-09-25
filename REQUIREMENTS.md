@@ -32,6 +32,11 @@ dependency.
 - CI on push/PR with branch protection on `main`/`hosted` (Stage 2).
 - One-command `install.sh` for apt/dnf distros, `update.sh`, `spottydaemon` CLI (Stage 3,
   closed 2026-09-25). No Docker image yet.
+- Queue: everything added from the dashboard or Discord goes into a bot-managed, reorderable
+  "Up next" list (`bot/up_next.py`), fed into Spotify's real queue one song at a time, since
+  Spotify's API can't reorder or remove queue entries. The dashboard's left panel shows
+  Spotify App Queue / Up next / Playlist; queued-vs-playlist is inferred by diffing queue
+  snapshots (multiset diff at the head of the queue), so it's a heuristic.
 
 ## Stage 1 — Branch & code structuring ✅ Done
 
@@ -97,14 +102,6 @@ so later stage numbers stay stable.
     traceback — return a clean 503 "bot starting" and show that state in the UI.
   - Spotify Web API paste-back linking is confusing on a no-domain install — clearer in-UI
     guidance (exact redirect URI to register, what the failed `127.0.0.1` page means).
-- **Deferred — reorderable "Up next" list.** Spotify's Web API can only read the queue and
-  append to it (no reorder/remove), so drag-to-reorder can't act on Spotify's queue directly.
-  Considered design: a bot-owned "Up next" list the dashboard can reorder, fed into Spotify's
-  real queue one track at a time just before the current track ends. Keeps the Spotify app a
-  first-class controller (it always sees a real next track; app-queued songs still work and
-  play before the rest of the Up-next list — a rule the UI must explain). Rejected
-  alternatives: a fully bot-owned queue or a hidden per-slot playlist, both of which make the
-  Spotify app second-class. Build only if reordering is actually asked for.
 
 ## Stage 4 — Docker image
 

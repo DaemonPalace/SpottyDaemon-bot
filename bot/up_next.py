@@ -135,9 +135,12 @@ class QueueTracker:
         front = []
         for i in range(last_anchor + 1):
             uri = window[i]
-            added[uri] -= 1
             survivors[uri] -= 1
             if i not in matched:
+                # Only an unmatched song can be a new copy -- an anchor was
+                # already in the last snapshot, so it mustn't use up the
+                # new-copy count a second queueing of the same song needs.
+                added[uri] -= 1
                 log.info("[UPNEXT-DIAG] %s: %s -> Queued (sits above a queued song, pos %d)", self.label, uri, i)  # TEMP-DIAG
             front.append((uri, matched.get(i, APP)))
 

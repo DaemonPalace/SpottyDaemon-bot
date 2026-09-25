@@ -1,9 +1,19 @@
-const JSON_HEADERS = { "Content-Type": "application/json" };
+// The open profile's credential: a slot session token from selectSlot, or a
+// jam token. The server checks it on every /api/slots/<name>/... call (see
+// bot/api.py's _slot_access_middleware); the dashboard shows one profile at
+// a time, so one module-level value is enough.
+let slotToken = null;
+export const setSlotToken = (token) => {
+  slotToken = token || null;
+};
 
 async function request(method, path, body) {
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (slotToken) headers["X-Slot-Token"] = slotToken;
   const res = await fetch(path, {
     method,
-    headers: body !== undefined ? JSON_HEADERS : undefined,
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
     credentials: "include",
   });
@@ -27,6 +37,10 @@ export const logout = () => request("POST", "/api/supervisor/logout");
 export const getLogs = () => request("GET", "/api/supervisor/logs");
 export const startBot = () => request("POST", "/api/supervisor/bot/start");
 export const restartBot = () => request("POST", "/api/supervisor/bot/restart");
+export const getAdminSettings = () => request("GET", "/api/supervisor/settings");
+export const updateAdminSettings = (values) => request("POST", "/api/supervisor/settings", values);
+export const changeAdminPassword = (newPassword) =>
+  request("POST", "/api/supervisor/admin-password", { new_password: newPassword });
 
 // Slots (open to the dashboard; deleteSlot is the one route that needs the
 // admin session cookie -- see supervisor/auth.py's _is_admin_gated)
@@ -34,6 +48,7 @@ export const listSlots = () => request("GET", "/api/slots");
 export const startLink = (slot_name, password) => request("POST", "/api/slots/link/start", { slot_name, password });
 export const finishLink = (user_id, pasted_url) => request("POST", "/api/slots/link/finish", { user_id, pasted_url });
 export const selectSlot = (name, password) => request("POST", `/api/slots/${encodeURIComponent(name)}/select`, { password });
+export const getJamSlot = (token) => request("GET", `/api/jam/${encodeURIComponent(token)}`);
 export const deleteSlot = (name) => request("DELETE", `/api/slots/${encodeURIComponent(name)}`);
 export const startWebApiLink = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/web-api-link/start`, {});
 export const finishWebApiLink = (name, user_id, pasted_url) =>

@@ -1,0 +1,8 @@
+# Only needed for the legacy AWS deployment mode (HOST_CONTROLLER=ec2,
+# SECRETS_MANAGER_SECRET_ID, or INTERACTIONS_QUEUE_URL -- see README's
+# "Legacy: AWS deployment" section). Not installed by install.sh; boto3/
+# botocore add ~100MB+ of nothing a plain self-hosted install ever uses.
+#
+# pip install -r requirements.txt -r requirements-aws.txt
+-r requirements.txt
+boto3>=1.34.0

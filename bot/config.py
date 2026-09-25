@@ -59,6 +59,14 @@ API_HOST = os.environ.get("API_HOST", "127.0.0.1")
 API_PORT = int(os.environ.get("API_PORT", "8787"))
 API_TOKEN = os.environ.get("API_TOKEN")
 
+# Public base URL of the dashboard (e.g. https://music.example.com). When
+# set, the /jam panel links guests to a no-password jam dashboard on it
+# (bot/jam.py). Unset: no link button, since there's nothing public to
+# point at. A bare domain gets https:// prepended.
+PUBLIC_DASHBOARD_URL = os.environ.get("PUBLIC_DASHBOARD_URL", "").strip().rstrip("/")
+if PUBLIC_DASHBOARD_URL and "://" not in PUBLIC_DASHBOARD_URL:
+    PUBLIC_DASHBOARD_URL = f"https://{PUBLIC_DASHBOARD_URL}"
+
 # Optional: a test server's guild ID. When set, slash commands sync to just
 # that guild instead of globally -- guild-scoped commands update instantly,
 # global ones can take up to an hour to propagate (plus Discord client-side
@@ -75,8 +83,23 @@ SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 # Optional -- only needed if the app is registered as a confidential client;
 # a PKCE public client doesn't require one.
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
-SPOTIFY_WEB_API_REDIRECT_URI = os.environ.get(
-    "SPOTIFY_WEB_API_REDIRECT_URI", "http://127.0.0.1:5589/callback"
+SPOTIFY_WEB_API_REDIRECT_URI = os.environ.get("SPOTIFY_WEB_API_REDIRECT_URI") or (
+    # Spotify only allows plain HTTP on loopback, so an http:// LAN dashboard
+    # can't be the callback -- keep the paste-back default for it.
+    f"{PUBLIC_DASHBOARD_URL}/api/spotify/callback"
+    if PUBLIC_DASHBOARD_URL.startswith("https://")
+    else "http://127.0.0.1:5589/callback"
+)
+# Direct linking: Spotify redirects the browser straight back to this bot's
+# public callback (bot/api.py's _spotify_callback), so neither /link nor
+# /link-web-api needs the copy-the-failed-url-back step. Needs our own
+# Spotify app (SPOTIFY_CLIENT_ID) with the callback registered on it -- the
+# supervisor/install.sh set SPOTIFY_WEB_API_REDIRECT_URI to it whenever the
+# domain is entered. Anything else keeps the paste-back flow.
+SPOTIFY_DIRECT_CALLBACK = bool(
+    SPOTIFY_CLIENT_ID
+    and PUBLIC_DASHBOARD_URL
+    and SPOTIFY_WEB_API_REDIRECT_URI == f"{PUBLIC_DASHBOARD_URL}/api/spotify/callback"
 )
 
 LIBRESPOT_BIN = os.environ.get("LIBRESPOT_BIN", "librespot")

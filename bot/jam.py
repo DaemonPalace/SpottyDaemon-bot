@@ -2,8 +2,13 @@
 next 5 queued tracks) with Rewind/Play/Pause/Skip buttons, posted to
 whichever channel /jam was run in. Reposted (deleted + resent, see
 repost()) after a play-track action so it stays near the bottom of the
-channel instead of getting buried under other activity. Replaces the old
-web Jam link.
+channel instead of getting buried under other activity.
+
+If PUBLIC_DASHBOARD_URL is set, the panel also carries an "Open dashboard"
+link to <url>/jam/<token>: a no-password dashboard for the jammed slot. The
+token lives only as long as the panel does (stop_jam, a new /jam for a
+different slot, or a bot restart all kill it) -- see bot/api.py's
+_jam_slot for the lookup.
 
 One session per guild, mirroring commands.py's _active_sessions model.
 Editing the message every REFRESH_INTERVAL_SECONDS is well under Discord's
@@ -20,11 +25,13 @@ live Interaction; interaction_relay.py's _run_component calls apply_action
 
 import asyncio
 import logging
+import secrets
 
 import discord
 
 import spotify_player_api
-from commands import flush_slot_pipe
+from commands import flush_slot_pipe, resolve_jam_slot
+from config import PUBLIC_DASHBOARD_URL
 from librespot_manager import LibrespotManager
 from slot_store import SlotStore
 from spotify_web_api import WebApiLinkManager
@@ -33,14 +40,14 @@ log = logging.getLogger("jam")
 
 REFRESH_INTERVAL_SECONDS = 5
 QUEUE_PREVIEW_SIZE = 5
-DASHBOARD_URL = "https://music.daemonpalace.space"
 
 
 class JamSession:
-    def __init__(self, message: discord.Message, slot_index: int, task: asyncio.Task):
+    def __init__(self, message: discord.Message, slot_index: int, task: asyncio.Task, token: str):
         self.message = message
         self.slot_index = slot_index
         self.task = task
+        self.token = token
 
 
 class JamManager:
@@ -56,6 +63,12 @@ class JamManager:
         live Interaction to look it up through."""
         session = self._sessions.get(guild_id)
         return session.slot_index if session is not None else None
+
+    def slot_index_for_token(self, token: str) -> int | None:
+        for session in self._sessions.values():
+            if secrets.compare_digest(session.token, token):
+                return session.slot_index
+        return None
 
     async def build_embed(self, slot_index: int) -> discord.Embed:
         token = await self.web_api_link_manager.get_access_token(slot_index)
@@ -89,12 +102,30 @@ class JamManager:
     async def start_jam_in_channel(self, channel: discord.abc.Messageable, slot_index: int) -> None:
         guild = getattr(channel, "guild", None)
         assert guild is not None
+        # Keep the old link working if this just re-posts the same slot's
+        # panel (e.g. /connect's auto-post followed by a manual /jam).
+        old = self._sessions.get(guild.id)
+        token = old.token if old is not None and old.slot_index == slot_index else secrets.token_urlsafe(16)
         await self.stop_jam(guild.id)  # replace any existing panel for this guild, don't stack them
 
         embed = await self.build_embed(slot_index)
-        message = await channel.send(embed=embed, view=JamView(self))
+        message = await channel.send(embed=embed, view=JamView(self, token))
         task = asyncio.create_task(self._refresh_loop(guild.id))
-        self._sessions[guild.id] = JamSession(message, slot_index, task)
+        self._sessions[guild.id] = JamSession(message, slot_index, task, token)
+
+    async def auto_start(self, channel: discord.abc.Messageable, guild_id: int) -> str | None:
+        """/connect's automatic panel post. Returns a note for whoever ran
+        /connect if the panel couldn't be posted, instead of failing silently
+        (the connect itself already worked -- this never undoes it)."""
+        slot_index, error = resolve_jam_slot(guild_id, self.slot_store)
+        if error is not None:
+            return f"Jam panel not posted: {error[0]}"
+        try:
+            await self.start_jam_in_channel(channel, slot_index)
+        except Exception:
+            log.exception("auto-posting jam panel failed for guild %s", guild_id)
+            return "Jam panel couldn't be posted here -- the bot needs Send Messages + Embed Links in this channel."
+        return None
 
     async def repost(self, guild_id: int) -> None:
         """Deletes the current panel message and resends it as a fresh one
@@ -113,7 +144,7 @@ class JamManager:
         except discord.HTTPException:
             pass  # already gone -- fine, we're replacing it anyway
         try:
-            session.message = await channel.send(embed=embed, view=JamView(self))
+            session.message = await channel.send(embed=embed, view=JamView(self, session.token))
         except discord.HTTPException:
             log.exception("failed to repost jam panel for guild %s", guild_id)
 
@@ -198,10 +229,12 @@ class JamManager:
 
 
 class JamView(discord.ui.View):
-    def __init__(self, manager: JamManager):
+    def __init__(self, manager: JamManager, token: str):
         super().__init__(timeout=None)
         self.manager = manager
-        self.add_item(discord.ui.Button(label="Open dashboard", style=discord.ButtonStyle.link, url=DASHBOARD_URL))
+        if PUBLIC_DASHBOARD_URL:
+            url = f"{PUBLIC_DASHBOARD_URL}/jam/{token}"
+            self.add_item(discord.ui.Button(label="Open dashboard", style=discord.ButtonStyle.link, url=url))
 
     @discord.ui.button(label="Rewind", style=discord.ButtonStyle.secondary, emoji="⏮", custom_id="jam:rewind")
     async def rewind(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:

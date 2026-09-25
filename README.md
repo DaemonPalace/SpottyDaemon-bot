@@ -1,20 +1,23 @@
 # Discord Spotify Connect bot
 
 A self-hosted Discord bot that streams multiple Spotify Premium accounts into
-voice channels as real Spotify Connect devices, running on an EC2 instance
-that sleeps itself when idle and wakes on a slash command. Friends link their
-own Spotify account to a password-protected slot straight from Discord — no
-SSH access to the server required.
+voice channels as real Spotify Connect devices. Runs on any Linux server —
+your own box, a VPS, any cloud — with a one-command installer. Friends link
+their own Spotify account to a password-protected slot straight from
+Discord — no SSH access to the server required.
+
+AWS (EC2 auto-sleep/wake, Lambda, SQS) is a legacy deployment mode from this
+project's original development environment, not a requirement — see
+["Legacy: AWS deployment"](#legacy-aws-deployment) if you specifically want it.
 
 > **This project was "vibe coded" — built end-to-end through conversational
 > pairing with [Claude Code](https://claude.com/claude-code) (Anthropic's
 > agentic coding CLI), not written by hand line-by-line.** It was a deliberate
 > learning exercise: how far a conversational agent can take a real,
-> multi-service AWS deployment (EC2, Lambda, SQS, IAM, Secrets Manager) from
-> a feature request to a working, debugged production system — including
-> diagnosing live bugs from production logs, not just writing code that
-> compiles. See ["About this project"](#about-this-project) below for what
-> that process actually looked like.
+> multi-service production system from a feature request to a working,
+> debugged deployment — including diagnosing live bugs from production logs,
+> not just writing code that compiles. See ["About this project"](#about-this-project)
+> below for what that process actually looked like.
 
 ## Capabilities
 
@@ -34,43 +37,38 @@ SSH access to the server required.
 - **Admin slot management** (`/delete-slot`, permission-gated on Manage
   Server, enforced both by Discord and again server-side since production
   traffic bypasses Discord's own gateway-level check).
-- **Cost-optimized on-demand infrastructure**: the EC2 instance stops itself
-  after 20 idle minutes and wakes back up via `/wake`, routed through a
-  small always-on Lambda so the bot doesn't need to be running to receive
-  that command.
 - **Self-healing audio pipeline**: a background reader keeps each slot's
   named pipe drained (so librespot's writer can never block indefinitely on
   pause), paced to real playback speed (so idle draining can't race ahead
   of real time), with automatic reattachment if playback stops on its own
   so a pause doesn't require re-running `/connect`.
-- **Fully scripted infrastructure** — IAM roles, the SQS relay queue, the
-  Lambda deploy, and a guided EC2 instance bootstrap that walks a fresh
-  install through entering Discord app credentials interactively.
+- **One-command install** (`install.sh`) on any apt/dnf Linux server, plus a
+  `spottydaemon` CLI for headless setup — see ["Installing"](#installing-any-linux-server).
+- *(Legacy, optional)* **Cost-optimized on-demand infrastructure**: on the
+  AWS deployment mode, the EC2 instance stops itself after 20 idle minutes
+  and wakes back up via `/wake`, routed through a small always-on Lambda so
+  the bot doesn't need to be running to receive that command. See
+  ["Legacy: AWS deployment"](#legacy-aws-deployment).
 
 ## Architecture
 
 ```
-Discord ──▶ Lambda (Function URL) ──▶ /wake, /sleep: direct EC2 API calls
-                │                     /connect, /link: respond with a
-                │                       password modal directly
-                ▼
-         SQS relay queue ──▶ EC2 bot process (long-polls the queue)
-                                    │
-                                    ├─ librespot × N (one per claimed slot,
-                                    │   each a real Spotify Connect device)
-                                    │   → named pipe → ffmpeg → Discord voice
-                                    │
-                                    └─ replies via Discord's webhook-followup
-                                       API (no live gateway Interaction object
-                                       on this path)
+Discord ──▶ gateway connection ──▶ bot process
+                                       │
+                                       ├─ librespot × N (one per claimed slot,
+                                       │   each a real Spotify Connect device)
+                                       │   → named pipe → ffmpeg → Discord voice
+                                       │
+                                       └─ cockpit UI (supervisor/) manages
+                                          the bot process + serves the
+                                          dashboard, browser-facing
 ```
 
-Discord delivers interactions to either the bot's gateway connection or a
-single HTTP "Interactions Endpoint URL" — never both. Once that endpoint is
-set (required so `/wake` works while the instance is stopped), the Lambda
-becomes the front door for every interaction: it answers `/wake`/`/sleep`
-and password modals itself, and relays anything that needs the running bot
-process onto SQS.
+This is the default, self-hosted path: the bot talks to Discord over its
+own gateway connection, so no inbound network exposure or HTTP endpoint is
+needed at all. The legacy AWS mode swaps this for a Lambda + SQS relay so
+`/wake` still works while the instance itself is stopped — see
+["Legacy: AWS deployment"](#legacy-aws-deployment) for that diagram.
 
 ## About this project
 
@@ -114,31 +112,62 @@ Function URLs, SQS, Secrets Manager) along the way.
 ## Layout
 
 - `bot/` — the Discord bot (discord.py) + librespot process manager + idle-shutdown monitor
-- `systemd/discord-music-bot.service` — runs the bot on boot
-- `lambda/wake_sleep.py` — Discord Interactions Endpoint handler (`/wake`, `/sleep`, password modals, SQS relay)
-- `infra/` — setup scripts + IAM policy JSON for the Lambda role and the EC2 instance role
+- `supervisor/` — cockpit UI backend: setup wizard, admin auth, starts/stops the bot, the `spottydaemon` CLI (`supervisor/cli.py`)
+- `frontend/` — the cockpit UI itself (React)
+- `install.sh` — one-command installer for any apt/dnf Linux box (see below)
+- `update.sh` — redeploy an already-installed instance (pull, rebuild, restart, verify)
+- `systemd/` — service units for the bot, the dashboard, and an optional Caddy reverse proxy
+- `infra/`, `lambda/wake_sleep.py` — **legacy AWS-only**: EC2 auto-sleep/wake via Lambda + SQS. Not used by `install.sh`. See ["Legacy: AWS deployment"](#legacy-aws-deployment).
 
-## Self-hosting (no AWS)
+## Installing (any Linux server)
 
-Just want to run this on your own Linux box, no EC2/Lambda/SQS? This is the
-default: `INTERACTIONS_QUEUE_URL` and `HOST_CONTROLLER` are both optional,
-defaulting to running the gateway `CommandTree` directly (all slash commands
-work with no Interactions Endpoint URL configured) and to a no-op
-"stop the host" action (`HOST_CONTROLLER=noop`, since a self-hoster turns
-their own machine off).
+```
+git clone <this repo's URL> discord-bot
+cd discord-bot
+./install.sh
+```
 
-1. Copy `.env.example` to `.env` and fill in `DISCORD_TOKEN` (and, if you
-   want, `SPOTIFY_CLIENT_ID`/`SPOTIFY_CLIENT_SECRET` for Web API queue/
-   now-playing features later — see "Spotify Web API access" below).
-2. Install librespot + ffmpeg, then `pip install -r requirements.txt`.
-3. Run `bot/main.py` directly, or install `systemd/discord-music-bot.service`
-   for it to run on boot (adjust the hardcoded `/opt/discord-bot` paths/user
-   if you're not using that convention).
-4. Check `curl http://127.0.0.1:8787/healthz` once it's running — that's the
-   diagnostics API (see `bot/api.py`), on by default, loopback-only.
+Installs system packages, ffmpeg, Rust, builds librespot, builds the
+dashboard frontend, deploys everything to `/opt/discord-bot`, and sets up
+(but doesn't start) the `discord-music-bot` and `discord-dashboard` systemd
+services plus the `spottydaemon` CLI. Supports any apt- or dnf-based distro.
+Safe to re-run.
 
-Already running on AWS? See "EC2 setup" and "Lambda (wake/sleep) setup"
-below instead — that path still works unchanged.
+It does **not** ask for your Discord bot token or set an admin password —
+that's a separate step, on purpose (so the install itself can be scripted/
+unattended). Once it finishes, either:
+
+- **Cockpit UI**: `sudo systemctl start discord-dashboard`, open
+  `http://<this-machine>:8080`, follow the setup wizard.
+- **Headless / CLI**:
+  ```
+  spottydaemon setup --bot-token <token> --admin-password <password>
+  sudo systemctl start discord-music-bot discord-dashboard
+  ```
+
+`spottydaemon --help` lists every command (`setup`, `set KEY=VALUE` for any
+other `.env` value — e.g. `spottydaemon set MAX_SLOTS=10`, `sudo spottydaemon passwd` to
+change or reset a forgotten admin password, `start`/`stop`/`restart`, `status`). Grab the bot
+token from https://discord.com/developers/applications → your app → Bot
+page → Reset Token.
+
+To update later: `./update.sh` — pulls the latest code, rebuilds the
+frontend, redeploys, restarts the services, and checks the bot + dashboard
+actually came back up. Faster than re-running `install.sh` (skips system
+packages/rust/librespot), which is still fine to re-run too.
+
+`INTERACTIONS_QUEUE_URL` and `HOST_CONTROLLER` (both unset by default) are
+what make this AWS-free: unset means the bot runs the gateway `CommandTree`
+directly — no Interactions Endpoint URL needed — and "stop the host" on idle
+is a no-op (`HOST_CONTROLLER=noop`), since you turn your own machine off
+yourself. Check `curl http://127.0.0.1:8787/healthz` once running — the
+diagnostics API (`bot/api.py`), loopback-only by default.
+
+Prefer to install by hand instead of `./install.sh`? Copy `.env.example` to
+`.env`, install librespot + ffmpeg + Node 20+ yourself, `pip install -r
+requirements.txt`, `cd frontend && npm ci && npm run build`, then run
+`bot/main.py` / `supervisor/main.py` directly or install the `systemd/*.service`
+units.
 
 ## Cockpit UI (web control panel)
 
@@ -166,7 +195,43 @@ They're plain HTTP today (LAN/localhost); putting a tunnel (Cloudflare
 Tunnel, Tailscale Funnel) in front of the supervisor to share a Jam link
 outside your network is a natural next step, not built in yet.
 
-## EC2 setup
+## Legacy: AWS deployment
+
+This project's original development environment: an EC2 instance that
+sleeps itself when idle and wakes on a slash command, via a Lambda +
+SQS relay. It's how the prototype was built and tested — **not** the
+recommended way to run this now; see ["Installing"](#installing-any-linux-server)
+above for the plain self-hosted path. Kept for anyone specifically
+replicating that dev setup, or continuing to use it.
+
+Needs `boto3`, which the plain self-host install skips (it's ~100MB+ of
+nothing a self-hoster ever uses): `pip install -r requirements.txt -r
+requirements-aws.txt`.
+
+```
+Discord ──▶ Lambda (Function URL) ──▶ /wake, /sleep: direct EC2 API calls
+                │                     /connect, /link: respond with a
+                │                       password modal directly
+                ▼
+         SQS relay queue ──▶ EC2 bot process (long-polls the queue)
+                                    │
+                                    ├─ librespot × N (one per claimed slot,
+                                    │   each a real Spotify Connect device)
+                                    │   → named pipe → ffmpeg → Discord voice
+                                    │
+                                    └─ replies via Discord's webhook-followup
+                                       API (no live gateway Interaction object
+                                       on this path)
+```
+
+Discord delivers interactions to either the bot's gateway connection or a
+single HTTP "Interactions Endpoint URL" — never both. Once that endpoint is
+set (required so `/wake` works while the instance is stopped), the Lambda
+becomes the front door for every interaction: it answers `/wake`/`/sleep`
+and password modals itself, and relays anything that needs the running bot
+process onto SQS.
+
+### EC2 setup
 
 1. Launch `t3.micro` (free-tier eligible; use `t3.small` if 1 GiB RAM feels tight), Amazon Linux 2023 (x86_64), 8 GiB gp3 root volume, tag `Name=discord-music-bot`.
 2. Create secret `discord-music-bot/credentials` in Secrets Manager (Secret type: "Other", plaintext JSON) with key `DISCORD_TOKEN`. ~$0.40/month total.
@@ -174,7 +239,7 @@ outside your network is a natural next step, not built in yet.
 4. `git clone` this repo to `~/discord-bot` on the instance, then run `infra/setup-instance.sh` **on the instance**. This is a guided, one-command setup: it installs system deps, ffmpeg, and Rust, builds librespot, deploys the bot to `/opt/discord-bot`, and interactively walks you through entering your Discord bot token, application ID, and public key (grab them from https://discord.com/developers/applications first). Safe to re-run (e.g. after a `git pull`) — it skips work already done and won't re-prompt once credentials are saved.
 5. The script's final "next steps" summary tells you exactly what's left — starting the service, and (if you haven't already) creating the SQS relay queue and deploying the Lambda, both covered below.
 
-## Lambda (wake/sleep) setup
+### Lambda (wake/sleep) setup
 
 Discord delivers interactions to either the bot's gateway connection or a
 single HTTP "Interactions Endpoint URL" — never both. Once that endpoint is
@@ -203,7 +268,7 @@ for any of this.
 4. Run `/link-finish` within `LINK_TIMEOUT_SECONDS` (default 15 min) to complete linking — paste the failed url in if you had to copy one, or leave it blank if the page loaded fine.
 5. Once linked, anyone can `/connect <slotname>` and enter the slot's password in the popup to start streaming it.
 
-This works without exposing any port on the EC2 instance: librespot's own
+This works without exposing any port on the server: librespot's own
 OAuth client only accepts loopback redirect URIs, so there's no way to make
 Spotify redirect a remote browser straight back to a public address anyway.
 `--enable-oauth` runs a real local HTTP server on `127.0.0.1:<port>`, actively
@@ -261,6 +326,9 @@ developer.spotify.com and add `SPOTIFY_WEB_API_REDIRECT_URI` (default
 `/api/latency`, `/api/slots`, `/api/slots/<name>/audio`, `/api/sessions`.
 Set `API_TOKEN` to require `Authorization: Bearer <token>` on everything
 except `/healthz` — recommended before exposing this beyond localhost.
+`/api/slots/<name>/...` routes (other than `/select`) and `/api/sessions`
+also need `X-Admin: 1` (or a slot token from `/select` in `X-Slot-Token`);
+the dashboard supervisor sets these itself.
 
 ## Known gaps / next steps
 

@@ -40,6 +40,7 @@ from librespot_manager import LibrespotManager
 from slot_store import STATE_CLAIMED, SlotStore
 from spotify_link import LinkManager
 from spotify_web_api import WebApiLinkManager
+from up_next import UpNextManager
 
 log = logging.getLogger("api")
 
@@ -85,8 +86,10 @@ class DiagnosticsApi:
         link_manager: LinkManager,
         web_api_link_manager: WebApiLinkManager,
         jam_manager: JamManager,
+        up_next: UpNextManager,
     ):
         self.client = client
+        self.up_next = up_next
         self.librespot = librespot
         self.slot_store = slot_store
         self.link_manager = link_manager
@@ -148,6 +151,8 @@ class DiagnosticsApi:
         app.router.add_post("/api/slots/{name}/web-api-link/finish", self._web_api_link_finish)
         app.router.add_get("/api/slots/{name}/player-state", self._player_state)
         app.router.add_post("/api/slots/{name}/queue", self._player_queue_add)
+        app.router.add_post("/api/slots/{name}/up-next/move", self._up_next_move)
+        app.router.add_post("/api/slots/{name}/up-next/remove", self._up_next_remove)
         app.router.add_get("/api/slots/{name}/search", self._player_search)
         app.router.add_get("/api/slots/{name}/library/albums", self._library_albums)
         app.router.add_get("/api/slots/{name}/albums/{album_id}", self._album_detail)
@@ -438,25 +443,41 @@ class DiagnosticsApi:
         return token
 
     async def _player_state(self, request: web.Request) -> web.Response:
-        """Now-playing + queue in one round trip -- the dashboard and jam
-        view poll this every few seconds, and now-playing/queue used to be
-        two separate Spotify API calls per poll for no reason (they're
-        always needed together)."""
-        token = await self._get_slot_access_token(request.match_info["name"])
-        now_playing, queue = await asyncio.gather(
-            spotify_player_api.get_now_playing(token),
-            spotify_player_api.get_queue(token),
-        )
-        return web.json_response({"now_playing": now_playing, "queue": queue})
+        """Now-playing + the three queue sections (Spotify app queue, Up
+        next, playlist) in one round trip -- the dashboard and jam view
+        poll this every few seconds. Each poll is also an Up-next snapshot,
+        see up_next.py."""
+        name = request.match_info["name"]
+        await self._get_slot_access_token(name)
+        state = await self.up_next.refresh(self.slot_store.get_by_name(name).index)
+        return web.json_response(state)
 
     async def _player_queue_add(self, request: web.Request) -> web.Response:
-        token = await self._get_slot_access_token(request.match_info["name"])
+        """Adds to the bot's Up next, not Spotify's queue directly -- see
+        up_next.py for why."""
+        name = request.match_info["name"]
+        token = await self._get_slot_access_token(name)
         body = await request.json()
         uri = body.get("uri", "")
         if not uri:
             raise web.HTTPBadRequest(text="uri is required")
-        await spotify_player_api.add_to_queue(token, uri)
+        track = await spotify_player_api.get_track(token, uri)
+        await self.up_next.add(self.slot_store.get_by_name(name).index, [track])
         return web.json_response({"queued": uri})
+
+    async def _up_next_move(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        slot_index = self.slot_store.get_by_name(request.match_info["name"]).index
+        if not await self.up_next.move(slot_index, body.get("id", ""), int(body.get("to", 0))):
+            raise web.HTTPNotFound(text="no such Up next entry -- it may already be playing")
+        return web.json_response({"ok": True})
+
+    async def _up_next_remove(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        slot_index = self.slot_store.get_by_name(request.match_info["name"]).index
+        if not await self.up_next.remove(slot_index, body.get("id", "")):
+            raise web.HTTPNotFound(text="no such Up next entry -- it may already be playing")
+        return web.json_response({"ok": True})
 
     async def _player_search(self, request: web.Request) -> web.Response:
         token = await self._get_slot_access_token(request.match_info["name"])
@@ -541,13 +562,11 @@ class DiagnosticsApi:
         return web.json_response({"ok": True})
 
     async def _playlist_queue_all(self, request: web.Request) -> web.Response:
-        """Spotify's queue endpoint only takes one track at a time -- no
-        batch/context form -- so a whole-playlist queue is just this loop."""
-        token = await self._get_slot_access_token(request.match_info["name"])
+        name = request.match_info["name"]
+        token = await self._get_slot_access_token(name)
         playlist = await spotify_player_api.get_playlist(token, request.match_info["playlist_id"])
         tracks = [item["track"] for item in playlist.get("tracks", {}).get("items", []) if item.get("track")]
-        for track in tracks:
-            await spotify_player_api.add_to_queue(token, track["uri"])
+        await self.up_next.add(self.slot_store.get_by_name(name).index, tracks)
         return web.json_response({"queued": len(tracks)})
 
     async def _player_play_track(self, request: web.Request) -> web.Response:

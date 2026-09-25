@@ -96,7 +96,7 @@ class JamManager:
             for i, track in enumerate(upcoming, 1):
                 artists = ", ".join(a["name"] for a in track.get("artists", []))
                 lines.append(f"{i}. {track['name']} — {artists}")
-            embed.add_field(name="Up next", value="\n".join(lines), inline=False)
+            embed.add_field(name="Spotify queue", value="\n".join(lines), inline=False)
         return embed
 
     async def start_jam_in_channel(self, channel: discord.abc.Messageable, slot_index: int) -> None:

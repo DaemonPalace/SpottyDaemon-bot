@@ -53,7 +53,7 @@ class StubLinks:
 async def main():
     store = StubStore()
     web_api = spotify_web_api.WebApiLinkManager(store)
-    diag = api.DiagnosticsApi(None, None, store, StubLinks(), web_api, None)
+    diag = api.DiagnosticsApi(None, None, store, StubLinks(), web_api, None, None)
 
     async def no_profile(slot_index):
         pass

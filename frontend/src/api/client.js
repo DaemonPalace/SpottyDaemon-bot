@@ -65,6 +65,10 @@ export const updateSlotSettings = (name, { currentPassword, newName, newPassword
 // bot/api.py's _player_state
 export const getPlayerState = (name) => request("GET", `/api/slots/${encodeURIComponent(name)}/player-state`);
 export const addToQueue = (name, uri) => request("POST", `/api/slots/${encodeURIComponent(name)}/queue`, { uri });
+export const moveUpNext = (name, id, to) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/up-next/move`, { id, to });
+export const removeUpNext = (name, id) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/up-next/remove`, { id });
 export const playTrack = (name, uri) =>
   request("POST", `/api/slots/${encodeURIComponent(name)}/player/play-track`, { uri });
 export const searchTracks = (name, q) =>

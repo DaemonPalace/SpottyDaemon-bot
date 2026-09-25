@@ -32,6 +32,11 @@ dependency.
 - CI on push/PR with branch protection on `main`/`hosted` (Stage 2).
 - One-command `install.sh` for apt/dnf distros, `update.sh`, `spottydaemon` CLI (Stage 3,
   closed 2026-09-25). No Docker image yet.
+- Queue: everything added from the dashboard or Discord goes into a bot-managed, reorderable
+  "Up next" list (`bot/up_next.py`), fed into Spotify's real queue one song at a time, since
+  Spotify's API can't reorder or remove queue entries. The dashboard's left panel shows
+  Spotify App Queue / Up next / Playlist; queued-vs-playlist is inferred by diffing queue
+  snapshots (multiset diff at the head of the queue), so it's a heuristic.
 
 ## Stage 1 — Branch & code structuring ✅ Done
 

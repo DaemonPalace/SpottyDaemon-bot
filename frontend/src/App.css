@@ -865,3 +865,39 @@ button:disabled {
     justify-content: center;
   }
 }
+
+/* Queue panel: Spotify App Queue / Up next / Playlist */
+
+.queue-section + .queue-section {
+  margin-top: 1.25rem;
+}
+
+.queue-section h3 {
+  font-size: 0.95rem;
+}
+
+.queue-actions {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.queue-actions button {
+  padding: 0.2rem 0.4rem;
+  font-size: 0.85rem;
+}
+
+.queue-badge {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+}
+
+.track-row[draggable="true"] {
+  cursor: grab;
+}
+
+.track-row.dragging {
+  opacity: 0.4;
+}

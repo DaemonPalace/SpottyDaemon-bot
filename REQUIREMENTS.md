@@ -49,10 +49,10 @@ Branches:
 No `app-windows` / `app-mac` / `app-ios` branches yet — those are bonus sub-scopes of the desktop
 and mobile tracks (Stages 5 and 7), not separate tracks. Spin one up only when work on it begins.
 
-## Stage 2 — CI/CD pipeline ✅ Done (open gap below)
+## Stage 2 — CI/CD pipeline ✅ Done
 
-Open gap: backend CI only runs `py_compile` — no Python lint, and `bot/test_*.py` aren't run.
-Branch protection on `main`/`hosted` doesn't enforce for admins.
+Backend CI: `py_compile`, `ruff check` (bug-catching rules, `ruff.toml`), and every
+`bot/test_*.py`. Branch protection on `main`/`hosted` enforced for admins too.
 
 **Gate:** every push/PR to `main`, `hosted`, and any `-dev` branch runs automated checks; merges
 to a protected branch require the pipeline to pass.

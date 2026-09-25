@@ -15,6 +15,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m py_compile $(git ls-files '*.py')
+      - run: pip install ruff==0.16.9 -r requirements.txt
+      - run: ruff check bot supervisor lambda
+      - run: for t in bot/test_*.py; do python "$t" || exit 1; done
 
   frontend:
     runs-on: ubuntu-latest

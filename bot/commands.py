@@ -7,6 +7,8 @@ import asyncio
 import itertools
 import logging
 import os
+import queue
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -87,6 +89,7 @@ async def do_connect(
     password: str,
     librespot: LibrespotManager,
     store: SlotStore,
+    web_api_link_manager: WebApiLinkManager,
     channel_id: int | None = None,
 ) -> tuple[str, bool]:
     """Returns (content, ephemeral). channel_id is the text channel the
@@ -128,6 +131,7 @@ async def do_connect(
         log.exception("connect command failed")
         return "Something went wrong connecting/starting playback — check the bot logs.", True
 
+    await _activate_on_connect(spotify_slot, store, web_api_link_manager)
     return f"Connected. Control playback from Spotify Connect on slot **{slot_name}**.", False
 
 
@@ -138,6 +142,7 @@ async def do_reconnect(
     password: str,
     librespot: LibrespotManager,
     store: SlotStore,
+    web_api_link_manager: WebApiLinkManager,
     channel_id: int | None = None,
 ) -> tuple[str, bool]:
     """Forces a full disconnect+reconnect for one command: restarts the
@@ -181,7 +186,61 @@ async def do_reconnect(
         log.exception("reconnect command failed")
         return "Something went wrong reconnecting — check the bot logs.", True
 
+    await _activate_on_connect(spotify_slot, store, web_api_link_manager)
     return f"Reconnected. Control playback from Spotify Connect on slot **{slot_name}**.", False
+
+
+# Frames (20ms each) buffered between ffmpeg and discord.py's player thread.
+# ponytail: stale audio up to this long can play after an API skip, since
+# flush_slot_pipe() only clears the FIFO -- clear this too if that's audible.
+_SOURCE_BUFFER_FRAMES = 3
+
+
+class _GaplessSource(discord.AudioSource):
+    """Wraps FFmpegPCMAudio so an empty pipe means silence, not end of
+    stream. discord.py ends a source on the first short read, and ffmpeg's
+    stdout goes quiet every time Spotify pauses (librespot stops writing;
+    the FIFO never EOFs because LibrespotProcess holds a keepalive write
+    fd). A pump thread reads ffmpeg into a small bounded queue -- blocking
+    on a full queue keeps backpressure flowing to librespot, so the player's
+    20ms clock stays the only clock -- and read() never blocks: it hands
+    back a queued frame or silence. The stream ends only when ffmpeg itself
+    does (crash, or the FIFO's last writer closing on slot stop)."""
+
+    _SILENCE = b"\x00" * discord.opus.Encoder.FRAME_SIZE
+
+    def __init__(self, inner: discord.AudioSource):
+        self._inner = inner
+        self._frames: queue.Queue[bytes] = queue.Queue(maxsize=_SOURCE_BUFFER_FRAMES)
+        self._stopped = threading.Event()
+        threading.Thread(target=self._pump, name="gapless-pump", daemon=True).start()
+
+    def _pump(self) -> None:
+        while True:
+            try:
+                frame = self._inner.read()
+            except Exception:
+                if not self._stopped.is_set():
+                    log.exception("ffmpeg source failed")
+                frame = b""
+            while not self._stopped.is_set():
+                try:
+                    self._frames.put(frame, timeout=0.1)
+                    break
+                except queue.Full:
+                    pass
+            if not frame or self._stopped.is_set():
+                return
+
+    def read(self) -> bytes:
+        try:
+            return self._frames.get_nowait()
+        except queue.Empty:
+            return self._SILENCE
+
+    def cleanup(self) -> None:
+        self._stopped.set()
+        self._inner.cleanup()
 
 
 def _attach_source(
@@ -242,11 +301,14 @@ def _attach_source(
                 _reattach(guild, slot_name, generation, spotify_slot, librespot), loop
             )
 
-    source = discord.FFmpegPCMAudio(
+    source = _GaplessSource(discord.FFmpegPCMAudio(
         source=spotify_slot.pipe_path,
         before_options="-f s16le -ar 44100 -ac 2",
-        options="-vn",
-    )
+        # soxr: better 44.1k->48k resampling than swr's default. Needs an
+        # ffmpeg built with --enable-libsoxr; without it ffmpeg exits at
+        # startup and _reattach's flap cap posts the "stuck" notice.
+        options="-vn -af aresample=resampler=soxr",
+    ))
     voice_client.play(source, after=_after_playback)
 
 
@@ -257,12 +319,13 @@ async def _reattach(
     spotify_slot: SpotifySlot,
     librespot: LibrespotManager,
 ) -> None:
-    """ffmpeg can exit on its own well before the user runs /disconnect --
-    observed in production when Spotify is paused long enough that librespot
-    appears to close its pipe write-end, which looks like a clean EOF to
-    ffmpeg. There's no reason to make the user run /connect again just
-    because Spotify was paused for a bit, so if this guild is still supposed
-    to be connected to this slot, transparently reattach a fresh source.
+    """Safety net for ffmpeg exiting on its own before the user runs
+    /disconnect. Spotify pausing used to do this (librespot closes its FIFO
+    write end on pause, a clean EOF to ffmpeg) -- LibrespotProcess's
+    keepalive write fd plus _GaplessSource now keep that from ending the
+    stream, so this only fires on real failures (ffmpeg crashing, a voice
+    error). If this guild is still supposed to be connected to this slot,
+    transparently reattach a fresh source.
 
     Bounded: if reattaches keep dying within _FLAP_WINDOW_SECONDS of each
     other (observed in production when librespot has no valid Spotify
@@ -469,12 +532,50 @@ async def _activate_then_play(token: str, slot_index: int, track_uri: str, libre
     slot = librespot.slot_by_index(slot_index)
     if slot is not None:
         try:
-            device = await spotify_player_api.find_device(token, slot.name)
-            if device and not device.get("is_active") and device.get("id"):
-                await spotify_player_api.transfer_playback(token, device["id"])
+            await _activate_device(token, slot)
         except Exception:
             log.exception("failed to activate device for slot index %s", slot_index)
     await spotify_player_api.play_uri(token, track_uri)
+
+
+async def _activate_device(token: str, slot: SpotifySlot) -> bool:
+    """Makes the slot's librespot the active Spotify Connect device if it
+    isn't already. Returns False if Spotify doesn't list the device (yet)."""
+    device = await spotify_player_api.find_device(token, slot.name)
+    if device is None:
+        return False
+    if not device.get("is_active") and device.get("id"):
+        await spotify_player_api.transfer_playback(token, device["id"])
+    return True
+
+
+# A freshly (re)started librespot takes a moment to show up in Spotify's
+# device list -- /reconnect hits this every time.
+_ACTIVATE_ATTEMPTS = 5
+_ACTIVATE_RETRY_SECONDS = 1
+
+
+async def _activate_on_connect(
+    spotify_slot: SpotifySlot, store: SlotStore, web_api_link_manager: WebApiLinkManager
+) -> None:
+    """Best-effort, once per /connect or /reconnect: activate the slot's
+    device so the web UI's play/playlist/queue calls work straight away
+    instead of failing with NO_ACTIVE_DEVICE until someone picks the device
+    in a Spotify app. A no-op for slots without a Web API link."""
+    slot_meta = store.get_by_index(spotify_slot.index)
+    if slot_meta is None or slot_meta.web_api_refresh_token is None:
+        return
+    try:
+        token = await web_api_link_manager.get_access_token(slot_meta.index)
+        if token is None:
+            return
+        for _ in range(_ACTIVATE_ATTEMPTS):
+            if await _activate_device(token, spotify_slot):
+                return
+            await asyncio.sleep(_ACTIVATE_RETRY_SECONDS)
+        log.warning("slot %s never showed up in Spotify's device list, not activated", spotify_slot.name)
+    except Exception:
+        log.exception("failed to activate device for slot %s on connect", spotify_slot.name)
 
 
 def active_sessions_snapshot() -> list[dict]:

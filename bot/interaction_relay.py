@@ -294,7 +294,7 @@ class InteractionRelay:
 
         if command_name == "connect":
             content, ephemeral = await do_connect(
-                guild, member, argument, password, self.librespot, self.store, channel_id
+                guild, member, argument, password, self.librespot, self.store, self.web_api_link_manager, channel_id
             )
             if not ephemeral and channel_id is not None:
                 channel = self.client.get_channel(channel_id) or await self.client.fetch_channel(channel_id)
@@ -303,7 +303,7 @@ class InteractionRelay:
                     content = f"{content}\n{note}"
         elif command_name == "reconnect":
             content, ephemeral = await do_reconnect(
-                guild, member, argument, password, self.librespot, self.store, channel_id
+                guild, member, argument, password, self.librespot, self.store, self.web_api_link_manager, channel_id
             )
         elif command_name == "link":
             content, ephemeral = await do_link(str(member.id), argument, password, self.link_manager)

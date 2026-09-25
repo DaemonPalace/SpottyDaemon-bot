@@ -44,6 +44,10 @@ def _with_spotify_callback(values: dict[str, str]) -> dict[str, str]:
         return values
     if "://" not in url:
         url = f"https://{url}"
+    if not url.startswith("https://"):
+        # Spotify rejects plain-HTTP redirect URIs except on loopback, so an
+        # http://<lan-ip> dashboard keeps the paste-back default.
+        return {**values, "PUBLIC_DASHBOARD_URL": url}
     return {**values, "PUBLIC_DASHBOARD_URL": url, "SPOTIFY_WEB_API_REDIRECT_URI": f"{url}/api/spotify/callback"}
 
 

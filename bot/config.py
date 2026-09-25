@@ -84,7 +84,11 @@ SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 # a PKCE public client doesn't require one.
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
 SPOTIFY_WEB_API_REDIRECT_URI = os.environ.get("SPOTIFY_WEB_API_REDIRECT_URI") or (
-    f"{PUBLIC_DASHBOARD_URL}/api/spotify/callback" if PUBLIC_DASHBOARD_URL else "http://127.0.0.1:5589/callback"
+    # Spotify only allows plain HTTP on loopback, so an http:// LAN dashboard
+    # can't be the callback -- keep the paste-back default for it.
+    f"{PUBLIC_DASHBOARD_URL}/api/spotify/callback"
+    if PUBLIC_DASHBOARD_URL.startswith("https://")
+    else "http://127.0.0.1:5589/callback"
 )
 # Direct linking: Spotify redirects the browser straight back to this bot's
 # public callback (bot/api.py's _spotify_callback), so neither /link nor

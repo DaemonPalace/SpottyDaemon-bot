@@ -38,6 +38,7 @@ HANDOFF_MS = 15_000
 # A pushed song that never shows up in Spotify's queue (the add silently
 # didn't stick) stops being waited on after this many snapshots.
 PENDING_MAX_OBSERVATIONS = 3
+ANCHOR_SLACK = 5
 
 APP = "app"
 BOT = "bot"
@@ -104,36 +105,60 @@ class QueueTracker:
         if context_switched:
             log.info("[UPNEXT-DIAG] %s: context switch %s -> %s", self.label, self.context_key, context_key)  # TEMP-DIAG
 
-        # The queued block is the head run of songs that are either already
-        # known to be queued (matched by content, not position -- so a song
-        # inserted above them, or reordering them in the app, keeps them
-        # all), the bot's own pushes, or newly queued ones.
+        # Anchors: songs already known to be queued (matched by content, not
+        # position) and the bot's own pushes, looked for near the head.
+        # Spotify always plays queued songs before the context, so anything
+        # sitting ABOVE an anchor is queued too -- a newly queued song, or a
+        # playlist song someone dragged up into the queue in the app.
+        # ponytail: anchors are only searched ANCHOR_SLACK past the old
+        # queued block; drag more than that many songs up at once and the
+        # lower queued ones read as playlist until the next change.
         known = Counter(uri for uri, _ in old_front)
         sources: dict[str, list[str]] = {}
         for uri, source in old_front:
             sources.setdefault(uri, []).append(source)
         added = Counter(window) - Counter(old_window)
-        front, i = [], 0
-        while i < len(window):
+        matched: dict[int, str] = {}
+        last_anchor = -1
+        for i in range(min(len(window), len(old_front) + ANCHOR_SLACK)):
             uri = window[i]
             if known[uri] > 0:
                 known[uri] -= 1
-                survivors[uri] -= 1
-                source = sources[uri].pop(0)
+                matched[i] = sources[uri].pop(0)
             elif uri in self.pending_bot:  # the bot knows it queued it -- no baseline needed
+                del self.pending_bot[uri]
+                matched[i] = BOT
+                log.info("[UPNEXT-DIAG] %s: %s handed-over Up next song showed up in Spotify's queue", self.label, uri)  # TEMP-DIAG
+            else:
+                continue
+            last_anchor = i
+        front = []
+        for i in range(last_anchor + 1):
+            uri = window[i]
+            added[uri] -= 1
+            survivors[uri] -= 1
+            if i not in matched:
+                log.info("[UPNEXT-DIAG] %s: %s -> Queued (sits above a queued song, pos %d)", self.label, uri, i)  # TEMP-DIAG
+            front.append((uri, matched.get(i, APP)))
+
+        # Below the last anchor: a contiguous run of newly queued songs.
+        i = last_anchor + 1
+        while i < len(window):
+            uri = window[i]
+            if uri in self.pending_bot:
                 del self.pending_bot[uri]
                 source = BOT
                 log.info("[UPNEXT-DIAG] %s: %s handed-over Up next song showed up in Spotify's queue", self.label, uri)  # TEMP-DIAG
             elif trusted and added[uri] > 0:
-                added[uri] -= 1
                 source = APP
                 log.info("[UPNEXT-DIAG] %s: %s -> Queued (new copy at head, pos %d)", self.label, uri, i)  # TEMP-DIAG
             elif survivors[uri] > 0:
-                survivors[uri] -= 1
                 source = APP
                 log.info("[UPNEXT-DIAG] %s: %s -> Queued (survived context switch, pos %d)", self.label, uri, i)  # TEMP-DIAG
             else:
                 break
+            added[uri] -= 1
+            survivors[uri] -= 1
             front.append((uri, source))
             i += 1
 
@@ -150,6 +175,11 @@ class QueueTracker:
             if self.pending_bot[uri] >= PENDING_MAX_OBSERVATIONS:
                 del self.pending_bot[uri]
 
+        if window[:8] != self.window[:8] or front != self.front:  # TEMP-DIAG: every change at the head
+            log.info(
+                "[UPNEXT-DIAG] %s: snapshot current=%s trusted=%s head=%s queued=%s",
+                self.label, current_uri, trusted, window[:8], [f"{u}({src})" for u, src in front],
+            )
         self.context_key, self.current_uri, self.window, self.front = context_key, current_uri, window, front
 
 

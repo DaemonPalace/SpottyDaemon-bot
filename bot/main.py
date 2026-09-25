@@ -18,7 +18,7 @@ from commands import (
     forget_session,
     resolve_jam_slot,
 )
-from config import DEV_GUILD_ID, DISCORD_TOKEN, HOST_CONTROLLER, INTERACTIONS_QUEUE_URL, SLOTS
+from config import DEV_GUILD_ID, DISCORD_TOKEN, HOST_CONTROLLER, INTERACTIONS_QUEUE_URL, SLOTS, SPOTIFY_DIRECT_CALLBACK
 from host_control import build_host_controller
 from idle_monitor import IdleMonitor
 from interaction_relay import InteractionRelay
@@ -27,6 +27,7 @@ from librespot_manager import LibrespotManager
 from slot_store import SlotStore
 from spotify_link import LinkManager
 from spotify_web_api import WebApiLinkManager
+from up_next import UpNextManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("bot")
@@ -43,12 +44,15 @@ link_manager = LinkManager(slot_store, librespot)
 web_api_link_manager = WebApiLinkManager(slot_store)
 host_controller = build_host_controller(HOST_CONTROLLER)
 idle_monitor = IdleMonitor(client, slot_store, host_controller)
-diagnostics_api = DiagnosticsApi(client, librespot, slot_store, link_manager, web_api_link_manager)
 jam_manager = JamManager(slot_store, web_api_link_manager, librespot)
+up_next = UpNextManager(slot_store, web_api_link_manager)
+diagnostics_api = DiagnosticsApi(
+    client, librespot, slot_store, link_manager, web_api_link_manager, jam_manager, up_next
+)
 # None when no Lambda/SQS relay is configured -- the gateway CommandTree
 # below is then the one and only command path (self-host/standalone default).
 interaction_relay = (
-    InteractionRelay(client, librespot, slot_store, link_manager, web_api_link_manager, jam_manager)
+    InteractionRelay(client, librespot, slot_store, link_manager, web_api_link_manager, jam_manager, up_next)
     if INTERACTIONS_QUEUE_URL
     else None
 )
@@ -103,13 +107,18 @@ class LinkStartView(discord.ui.View):
     interaction_relay.py's module docstring). Under the relay there's no
     way to answer a fresh button click with a modal from here, so it's
     swapped for a disabled hint instead; the plain fallback_command still
-    works either way (interaction_relay.py handles it directly)."""
+    works either way (interaction_relay.py handles it directly).
+
+    In direct mode (SPOTIFY_DIRECT_CALLBACK) there's nothing to paste --
+    Spotify redirects to the bot's own callback -- so just the login button."""
 
     def __init__(self, authorize_url: str, modal_title: str, on_finish_callback, fallback_command: str):
         super().__init__(timeout=900)
         self.add_item(
             discord.ui.Button(label="Log in with Spotify", style=discord.ButtonStyle.link, url=authorize_url)
         )
+        if SPOTIFY_DIRECT_CALLBACK:
+            return
         if INTERACTIONS_QUEUE_URL:
             self.add_item(
                 discord.ui.Button(
@@ -147,11 +156,10 @@ async def connect(interaction: discord.Interaction, slot: str):
         await modal_interaction.followup.send(content, ephemeral=ephemeral)
         if not ephemeral:
             # Auto-post the Jam panel in the channel /connect was run from,
-            # same as running /jam by hand -- skipped quietly if the slot
-            # isn't Web-API-linked yet (resolve_jam_slot's error case).
-            slot_index, jam_error = resolve_jam_slot(guild.id, slot_store)
-            if jam_error is None:
-                await jam_manager.start_jam_in_channel(interaction.channel, slot_index)
+            # same as running /jam by hand.
+            note = await jam_manager.auto_start(interaction.channel, guild.id)
+            if note is not None:
+                await modal_interaction.followup.send(note, ephemeral=True)
 
     await interaction.response.send_modal(PasswordModal(f"Password for '{slot}'", handle_submit))
 
@@ -224,7 +232,7 @@ class TrackResultsView(discord.ui.View):
     def _make_callback(self, guild_id: int, track_uri: str, mode: str):
         async def callback(interaction: discord.Interaction) -> None:
             content, ephemeral = await do_play_track(
-                guild_id, track_uri, mode, slot_store, web_api_link_manager, librespot
+                guild_id, track_uri, mode, slot_store, web_api_link_manager, librespot, up_next
             )
             await interaction.response.edit_message(content=content, view=None)
             await jam_manager.repost(guild_id)
@@ -326,11 +334,26 @@ async def link_web_api_finish(interaction: discord.Interaction, url: str):
 # docstring), the bot process is already up, so both are trivial.
 @tree.command(name="wake", description="Start the music bot instance (takes ~30s)")
 async def wake(interaction: discord.Interaction):
+    if host_controller.describe() == "noop":
+        await interaction.response.send_message(
+            "Already running -- this install doesn't auto-sleep/wake (no Lambda/EC2 configured, "
+            "HOST_CONTROLLER=noop). See README's \"Legacy: AWS deployment\" section for that setup.",
+            ephemeral=True,
+        )
+        return
     await interaction.response.send_message("Already running.", ephemeral=True)
 
 
 @tree.command(name="sleep", description="Stop the music bot instance")
 async def sleep(interaction: discord.Interaction):
+    if host_controller.describe() == "noop":
+        await interaction.response.send_message(
+            "Can't self-stop -- this install has no Lambda/EC2 configured (HOST_CONTROLLER=noop). "
+            "Stop it yourself (e.g. `sudo systemctl stop discord-music-bot`), or set up the legacy "
+            "AWS auto-sleep/wake deployment -- see README's \"Legacy: AWS deployment\" section.",
+            ephemeral=True,
+        )
+        return
     await interaction.response.send_message("Stopping the music bot instance.")
     await host_controller.stop_host()
 
@@ -350,6 +373,7 @@ async def on_ready():
     if interaction_relay is not None:
         interaction_relay.start()
     link_manager.start()
+    up_next.start()
     diagnostics_api.start()
 
 

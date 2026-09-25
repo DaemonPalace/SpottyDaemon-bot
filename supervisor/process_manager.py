@@ -79,6 +79,7 @@ class BotProcessManager:
         assert self._proc is not None and self._proc.stdout is not None
         async for line in self._proc.stdout:
             self.logs.append(line.decode(errors="replace").rstrip())
+            print(self.logs[-1], flush=True)  # also into the dashboard's journal
 
     async def _watch_exit(self) -> None:
         assert self._proc is not None

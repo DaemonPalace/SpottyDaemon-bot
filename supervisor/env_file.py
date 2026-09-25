@@ -33,12 +33,31 @@ def read_env() -> dict[str, str]:
     return values
 
 
+def _with_spotify_callback(values: dict[str, str]) -> dict[str, str]:
+    """Entering the domain also points SPOTIFY_WEB_API_REDIRECT_URI at its
+    public callback (bot/api.py's _spotify_callback), which switches the bot
+    to direct Spotify linking -- see bot/config.py's SPOTIFY_DIRECT_CALLBACK.
+    Normalized the same way bot/config.py reads it back. An explicit
+    redirect URI in the same call wins."""
+    url = values.get("PUBLIC_DASHBOARD_URL", "").strip().rstrip("/")
+    if not url or "SPOTIFY_WEB_API_REDIRECT_URI" in values:
+        return values
+    if "://" not in url:
+        url = f"https://{url}"
+    if not url.startswith("https://"):
+        # Spotify rejects plain-HTTP redirect URIs except on loopback, so an
+        # http://<lan-ip> dashboard keeps the paste-back default.
+        return {**values, "PUBLIC_DASHBOARD_URL": url}
+    return {**values, "PUBLIC_DASHBOARD_URL": url, "SPOTIFY_WEB_API_REDIRECT_URI": f"{url}/api/spotify/callback"}
+
+
 def set_env_values(values: dict[str, str]) -> None:
     """Sets each key=value, uncommenting/replacing an existing (possibly
     commented-out) line for that key if one exists, appending a fresh line
     otherwise. Also updates os.environ in-process so this supervisor process
     itself sees the new values immediately (dotenv's own load_dotenv() only
     reads the file once at import time)."""
+    values = _with_spotify_callback(values)
     text = ""
     if os.path.exists(ENV_PATH):
         with open(ENV_PATH) as f:

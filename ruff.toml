@@ -1,0 +1,4 @@
+# Bug-catching rules only (syntax, undefined names, unused imports, ...),
+# pinned explicitly because newer ruff releases widen the default set.
+[lint]
+select = ["E4", "E7", "E9", "F"]

@@ -30,7 +30,7 @@ echo "Information page (application ID + public key)."
 echo
 
 echo "== system packages =="
-sudo dnf install -y python3.12 python3.12-pip git gcc pkgconfig openssl-devel make rsync
+sudo dnf install -y python3.12 python3.12-pip git gcc pkgconfig openssl-devel make rsync opus
 
 echo "== node.js (AL2023's dnf package is v18 -- too old for vite's toolchain) =="
 if ! command -v node >/dev/null 2>&1 || [ "$(node -e 'console.log(process.versions.node.split(".")[0])')" -lt 20 ]; then
@@ -84,7 +84,10 @@ sudo mkdir -p "$APP_DIR"
 sudo rsync -a --exclude='.env' --exclude='librespot-cache' "$REPO_SRC"/ "$APP_DIR"/
 sudo python3.12 -m venv "$APP_DIR/venv"
 sudo "$APP_DIR/venv/bin/pip" install --upgrade pip
-sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+# This is the AWS deployment path -- needs boto3 (EC2 self-stop, SQS relay,
+# optional Secrets Manager), split out of the base requirements.txt so the
+# plain self-host install doesn't carry it.
+sudo "$APP_DIR/venv/bin/pip" install -r "$APP_DIR/requirements.txt" -r "$APP_DIR/requirements-aws.txt"
 
 echo "== .env =="
 if [ -f "$APP_DIR/.env" ] && grep -q '^DISCORD_TOKEN=.\+' "$APP_DIR/.env" 2>/dev/null; then
@@ -172,6 +175,8 @@ EOF
   sudo cp "$APP_DIR/systemd/caddy.service" /etc/systemd/system/
   sudo systemctl daemon-reload
   sudo systemctl enable --now caddy
+  sudo sed -i '/^PUBLIC_DASHBOARD_URL=/d' "$APP_DIR/.env"
+  echo "PUBLIC_DASHBOARD_URL=https://$DASHBOARD_DOMAIN_INPUT" | sudo tee -a "$APP_DIR/.env" >/dev/null
   echo "-> Caddyfile written for $DASHBOARD_DOMAIN_INPUT. Make sure its DNS A record"
   echo "   points at this instance's (Elastic) IP and inbound 80/443 are open in"
   echo "   its security group before it'll get a cert."

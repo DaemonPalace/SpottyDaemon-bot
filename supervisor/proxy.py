@@ -1,5 +1,8 @@
 """Forwards browser-facing /api/* requests to bot/api.py, injecting the
-shared API_TOKEN bearer server-side so the browser never sees it.
+shared API_TOKEN bearer server-side so the browser never sees it. Also
+forwards the browser's X-Slot-Token and vouches for an admin session with
+X-Admin -- see bot/api.py's _slot_access_middleware. Only these headers are
+built here, so a browser can't send its own X-Admin through.
 """
 
 import logging
@@ -8,6 +11,7 @@ import os
 import aiohttp
 from aiohttp import web
 
+import auth
 from config import BOT_API_HOST, BOT_API_PORT
 
 log = logging.getLogger("proxy")
@@ -26,6 +30,10 @@ def _bot_base_url() -> str:
 async def _forward(request: web.Request, path: str) -> web.Response:
     token = _bot_api_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
+    if slot_token := request.headers.get("X-Slot-Token"):
+        headers["X-Slot-Token"] = slot_token
+    if auth.is_admin(request):
+        headers["X-Admin"] = "1"
     body = await request.read() if request.can_read_body else None
 
     async with aiohttp.ClientSession() as session:

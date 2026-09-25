@@ -500,6 +500,7 @@ button:disabled {
 /* Profile select (Netflix-style) */
 
 .profile-select {
+  position: relative;
   min-height: 100svh;
   display: flex;
   flex-direction: column;
@@ -507,6 +508,18 @@ button:disabled {
   justify-content: center;
   gap: 2rem;
   padding: 2rem 1.25rem;
+}
+
+.icon-btn {
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 0.5rem 0.7rem;
+}
+
+.profile-admin-btn {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.25rem;
 }
 
 .profile-select-title {
@@ -851,4 +864,40 @@ button:disabled {
   .npb-right {
     justify-content: center;
   }
+}
+
+/* Queue panel: Spotify App Queue / Up next / Playlist */
+
+.queue-section + .queue-section {
+  margin-top: 1.25rem;
+}
+
+.queue-section h3 {
+  font-size: 0.95rem;
+}
+
+.queue-actions {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.queue-actions button {
+  padding: 0.2rem 0.4rem;
+  font-size: 0.85rem;
+}
+
+.queue-badge {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+}
+
+.track-row[draggable="true"] {
+  cursor: grab;
+}
+
+.track-row.dragging {
+  opacity: 0.4;
 }

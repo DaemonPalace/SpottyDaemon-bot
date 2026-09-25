@@ -40,7 +40,6 @@ import json
 import logging
 
 import aiohttp
-import boto3
 import discord
 
 from commands import (
@@ -56,12 +55,13 @@ from commands import (
     do_search_tracks,
     resolve_jam_slot,
 )
-from config import AWS_REGION, INTERACTIONS_QUEUE_URL
+from config import AWS_REGION, INTERACTIONS_QUEUE_URL, SPOTIFY_DIRECT_CALLBACK
 from jam import JamManager
 from librespot_manager import LibrespotManager
 from slot_store import SlotStore
 from spotify_link import LinkManager
 from spotify_web_api import WebApiLinkManager
+from up_next import UpNextManager
 
 log = logging.getLogger("interaction_relay")
 
@@ -85,16 +85,12 @@ def _link_start_components(authorize_url: str, paste_flow: str) -> list[dict]:
     interaction generated -- safe to send with no live Interaction behind
     it) plus a "Paste redirect URL" button whose click Lambda answers with
     a MODAL directly (custom_id "paste-finish:<paste_flow>" once
-    submitted, see this module's docstring)."""
-    return [
-        {
-            "type": 1,
-            "components": [
-                {"type": 2, "style": 5, "label": "Log in with Spotify", "url": authorize_url},
-                {"type": 2, "style": 1, "label": "Paste redirect URL", "custom_id": f"paste:{paste_flow}"},
-            ],
-        }
-    ]
+    submitted, see this module's docstring). Direct mode drops the paste
+    button -- Spotify redirects to the bot's own callback instead."""
+    buttons = [{"type": 2, "style": 5, "label": "Log in with Spotify", "url": authorize_url}]
+    if not SPOTIFY_DIRECT_CALLBACK:
+        buttons.append({"type": 2, "style": 1, "label": "Paste redirect URL", "custom_id": f"paste:{paste_flow}"})
+    return [{"type": 1, "components": buttons}]
 
 
 def _track_result_components(results: list[dict]) -> list[dict]:
@@ -128,8 +124,10 @@ class InteractionRelay:
         link_manager: LinkManager,
         web_api_link_manager: WebApiLinkManager,
         jam_manager: JamManager,
+        up_next: UpNextManager,
     ):
         self.client = client
+        self.up_next = up_next
         self.librespot = librespot
         self.store = store
         self.link_manager = link_manager
@@ -140,15 +138,20 @@ class InteractionRelay:
         self._http: aiohttp.ClientSession | None = None
 
     def start(self) -> None:
-        # Built here, not __init__, so importing/constructing this class
-        # never requires boto3/AWS credentials -- only actually starting the
-        # relay (main.py only does so when INTERACTIONS_QUEUE_URL is set).
+        # Imported and built here, not at module level / in __init__, so
+        # importing/constructing this class never requires boto3 to even be
+        # installed -- only actually starting the relay (main.py only does
+        # so when INTERACTIONS_QUEUE_URL is set). boto3 is an optional
+        # legacy-AWS dependency (requirements-aws.txt), not part of the
+        # plain self-host install.
         # region_name explicit for the same reason bot/config.py's Secrets
         # Manager client needs it -- botocore doesn't reliably auto-resolve
         # a region under this systemd service. An unhandled exception here
         # would abort the rest of on_ready() silently (discord.py's default
         # on_error just logs it), taking link_manager/diagnostics_api's
         # own .start() calls down with it since they run after this one.
+        import boto3
+
         self._sqs = boto3.client("sqs", region_name=AWS_REGION)
         self._task = asyncio.create_task(self._loop())
 
@@ -294,10 +297,10 @@ class InteractionRelay:
                 guild, member, argument, password, self.librespot, self.store, channel_id
             )
             if not ephemeral and channel_id is not None:
-                slot_index, jam_error = resolve_jam_slot(guild.id, self.store)
-                if jam_error is None:
-                    channel = self.client.get_channel(channel_id) or await self.client.fetch_channel(channel_id)
-                    await self.jam_manager.start_jam_in_channel(channel, slot_index)
+                channel = self.client.get_channel(channel_id) or await self.client.fetch_channel(channel_id)
+                note = await self.jam_manager.auto_start(channel, guild.id)
+                if note is not None:
+                    content = f"{content}\n{note}"
         elif command_name == "reconnect":
             content, ephemeral = await do_reconnect(
                 guild, member, argument, password, self.librespot, self.store, channel_id
@@ -341,7 +344,7 @@ class InteractionRelay:
         if custom_id.startswith("play-track:"):
             _, mode, track_uri = custom_id.split(":", 2)
             content, _ephemeral = await do_play_track(
-                guild.id, track_uri, mode, self.store, self.web_api_link_manager, self.librespot
+                guild.id, track_uri, mode, self.store, self.web_api_link_manager, self.librespot, self.up_next
             )
             await self._edit_original_clear(interaction, content)
             await self.jam_manager.repost(guild.id)

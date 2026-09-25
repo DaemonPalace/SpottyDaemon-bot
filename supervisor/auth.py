@@ -3,13 +3,15 @@ session store), same shape as bot/api.py's _auth_middleware but a cookie
 instead of a bearer header, since this is a real browser login flow rather
 than a machine-to-machine API token.
 
-The admin password gates deleting a slot and reading the bot's raw startup
+The admin password gates deleting a slot, reading the bot's raw startup
 logs (which can contain stack traces/crash detail -- not for anonymous
-visitors hitting the site while the bot's restarting). Everything else in
-the dashboard (status, slot list, player/queue, linking) is open to anyone
-who can reach the supervisor -- per-slot passwords gate access to an
-individual slot's profile instead, see SlotProfile.jsx's PasswordGate.
-This is deliberately narrower than a general login wall."""
+visitors hitting the site while the bot's restarting), and the admin
+settings screen (.env values, admin password change -- see
+AdminSettingsModal.jsx). Everything else in the dashboard (status, slot
+list, player/queue, linking) is open to anyone who can reach the
+supervisor -- per-slot passwords gate access to an individual slot's
+profile instead, enforced by bot/api.py's _slot_access_middleware. This is deliberately
+narrower than a general login wall."""
 
 import hmac
 import time
@@ -33,6 +35,10 @@ def _is_admin_gated(method: str, path: str) -> bool:
         return True
     if method == "GET" and path == "/api/supervisor/logs":
         return True
+    if path == "/api/supervisor/settings" and method in ("GET", "POST"):
+        return True
+    if method == "POST" and path == "/api/supervisor/admin-password":
+        return True
     return False
 
 
@@ -55,10 +61,19 @@ def _verify(cookie_value: str) -> bool:
     return hmac.compare_digest(expected, mac)
 
 
-def issue_cookie(response: web.StreamResponse) -> None:
+def is_admin(request: web.Request) -> bool:
+    cookie_value = request.cookies.get(COOKIE_NAME)
+    return bool(cookie_value) and admin_store.is_configured() and _verify(cookie_value)
+
+
+def issue_cookie(request: web.Request, response: web.StreamResponse) -> None:
+    # Secure only when the browser is on HTTPS (directly, or via Caddy's
+    # X-Forwarded-Proto) -- browsers drop Secure cookies set over plain HTTP,
+    # which would break login on a no-domain LAN install (SUPERVISOR_HOST=0.0.0.0).
+    secure = request.secure or request.headers.get("X-Forwarded-Proto") == "https"
     expiry = int(time.time()) + SESSION_LIFETIME_SECONDS
     response.set_cookie(
-        COOKIE_NAME, _sign(expiry), httponly=True, samesite="Lax", secure=True, max_age=SESSION_LIFETIME_SECONDS
+        COOKIE_NAME, _sign(expiry), httponly=True, samesite="Lax", secure=secure, max_age=SESSION_LIFETIME_SECONDS
     )
 
 
@@ -81,5 +96,5 @@ async def session_middleware(request: web.Request, handler):
     # expiring, so an admin actively using the UI is never logged out.
     expiry = int(cookie_value.split(".", 1)[0])
     if expiry - time.time() < REISSUE_THRESHOLD_SECONDS:
-        issue_cookie(response)
+        issue_cookie(request, response)
     return response

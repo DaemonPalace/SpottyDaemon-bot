@@ -23,7 +23,7 @@ export function useSlotPlayer({ name, jamToken, fetchers }) {
     try {
       const state = await getPlayerState(key);
       setNowPlaying(state.now_playing);
-      setQueue(state.queue);
+      setQueue({ appQueue: state.app_queue, upNext: state.up_next, playlist: state.playlist });
       setError(null);
     } catch (err) {
       setError(err);

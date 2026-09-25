@@ -18,6 +18,7 @@ from librespot_manager import LibrespotManager
 from slot_store import STATE_CLAIMED, SlotStore
 from spotify_link import LinkManager
 from spotify_web_api import WebApiLinkManager
+from up_next import UpNextManager
 
 log = logging.getLogger("commands")
 
@@ -418,6 +419,7 @@ async def do_play_track(
     store: SlotStore,
     web_api_link_manager: WebApiLinkManager,
     librespot: LibrespotManager,
+    up_next: UpNextManager,
 ) -> tuple[str, bool]:
     """Returns (content, ephemeral). `mode` is "play_now" or "queue" --
     called when a specific track's Play/Queue button (from
@@ -444,8 +446,9 @@ async def do_play_track(
             await _activate_then_play(token, slot_index, track_uri, librespot)
             return "Nothing was playing, so playing this now instead.", True
 
-        await spotify_player_api.add_to_queue(token, track_uri)
-        return "Added to queue.", True
+        track = await spotify_player_api.get_track(token, track_uri)
+        await up_next.add(slot_index, [track])
+        return "Added to Up next.", True
     except Exception:
         # Most commonly Spotify's 404 NO_ACTIVE_DEVICE -- librespot hasn't
         # been picked up as the active Connect device yet. An uncaught

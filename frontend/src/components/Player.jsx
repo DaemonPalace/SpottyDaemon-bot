@@ -92,27 +92,121 @@ export function NowPlayingHero({ nowPlaying }) {
   );
 }
 
-export function QueueList({ queue }) {
-  const tracks = (queue?.queue || []).slice(0, 10);
+function TrackRowBody({ track }) {
   return (
-    <div className="card">
-      <h3>Up next</h3>
+    <>
+      <AlbumArt images={track.album?.images} alt={track.album?.name} size="sm" />
+      <div className="track-info">
+        <span className="track-name">{track.name}</span>
+        <span className="track-artist">{trackArtists(track)}</span>
+      </div>
+      <span className="track-duration">{formatDuration(track.duration_ms)}</span>
+    </>
+  );
+}
+
+function QueueSection({ title, hint, tracks }) {
+  return (
+    <section className="queue-section">
+      <h3>{title}</h3>
       {tracks.length === 0 ? (
-        <p className="hint">Queue's empty -- add something below.</p>
+        <p className="hint">{hint}</p>
       ) : (
         <ul className="track-list">
           {tracks.map((track, i) => (
             <li key={`${track.uri}-${i}`} className="track-row">
-              <AlbumArt images={track.album?.images} alt={track.album?.name} size="sm" />
-              <div className="track-info">
-                <span className="track-name">{track.name}</span>
-                <span className="track-artist">{trackArtists(track)}</span>
-              </div>
-              <span className="track-duration">{formatDuration(track.duration_ms)}</span>
+              <TrackRowBody track={track} />
             </li>
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+/** Left panel: songs queued from the Spotify app, the bot's own Up next
+ * (reorderable -- Spotify's API can't reorder its queue, see bot/up_next.py),
+ * then the rest of the playing playlist/album. The first Up next entry may
+ * be "staged": already handed to Spotify's queue, so it can't move anymore.
+ * onMove/onRemove omitted (jam guests) = read-only. */
+export function QueueList({ queue, onMove, onRemove }) {
+  const [dragId, setDragId] = useState(null);
+  const upNext = queue?.upNext || [];
+  const firstMovable = upNext.findIndex((e) => !e.staged);
+  const editable = Boolean(onMove && onRemove);
+
+  function drop(targetIndex) {
+    const id = dragId;
+    setDragId(null);
+    if (id === null || targetIndex < firstMovable) return;
+    // Server indexes count only the unstaged entries.
+    onMove(id, targetIndex - firstMovable);
+  }
+
+  return (
+    <div className="card">
+      <QueueSection
+        title="Spotify App Queue"
+        hint="Nothing queued from the Spotify app."
+        tracks={queue?.appQueue || []}
+      />
+
+      <section className="queue-section">
+        <h3>Up next</h3>
+        {upNext.length === 0 ? (
+          <p className="hint">Empty -- add songs with search or a playlist.</p>
+        ) : (
+          <ul className="track-list">
+            {upNext.map((entry, i) => {
+              const movable = editable && !entry.staged;
+              return (
+                <li
+                  key={entry.id}
+                  className={`track-row${dragId === entry.id ? " dragging" : ""}`}
+                  draggable={movable}
+                  onDragStart={() => setDragId(entry.id)}
+                  onDragEnd={() => setDragId(null)}
+                  onDragOver={(e) => movable && dragId !== null && e.preventDefault()}
+                  onDrop={() => drop(i)}
+                >
+                  <TrackRowBody track={entry.track} />
+                  {entry.staged ? (
+                    <span className="queue-badge" title="Already handed to Spotify's queue">next</span>
+                  ) : (
+                    editable && (
+                      <span className="queue-actions">
+                        <button
+                          type="button"
+                          className="ghost"
+                          aria-label="Move up"
+                          disabled={i === firstMovable}
+                          onClick={() => onMove(entry.id, i - firstMovable - 1)}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost"
+                          aria-label="Move down"
+                          disabled={i === upNext.length - 1}
+                          onClick={() => onMove(entry.id, i - firstMovable + 1)}
+                        >
+                          ↓
+                        </button>
+                        <button type="button" className="ghost" aria-label="Remove" onClick={() => onRemove(entry.id)}>
+                          ✕
+                        </button>
+                      </span>
+                    )
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
+
+      <QueueSection title="Playlist" hint="Nothing else coming up." tracks={(queue?.playlist || []).slice(0, 10)} />
     </div>
   );
 }

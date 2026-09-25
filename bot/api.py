@@ -10,26 +10,65 @@ unless the self-hoster opts in). If API_TOKEN is set, every route except
 startup warning is logged and all routes are open -- fine for diagnostics
 tooling and a local UI, not a substitute for real auth if this is ever
 exposed beyond localhost.
+
+Per-slot access (_slot_access_middleware): every /api/slots/{name}/...
+route except /select also needs one of, in an X-* header the supervisor
+forwards (supervisor/proxy.py):
+  - X-Admin: 1 -- set by the supervisor only for a valid admin session;
+  - X-Slot-Token: a slot session token, handed out by /select after a
+    correct password (signed with that slot's password hash, so changing
+    the password logs every old session out);
+  - X-Slot-Token: a live /jam panel's token (bot/jam.py) -- playback/
+    browsing routes only, never settings, relinking or delete.
 """
 
 import asyncio
+import hmac
+import html
 import logging
 import secrets
 import time
+from hashlib import sha256
 
 from aiohttp import web
 
 import spotify_player_api
 from commands import active_sessions_snapshot, do_delete_slot
-from config import API_HOST, API_PORT, API_TOKEN, MAX_SLOTS
+from config import API_HOST, API_PORT, API_TOKEN, MAX_SLOTS, SPOTIFY_DIRECT_CALLBACK
+from jam import JamManager
 from librespot_manager import LibrespotManager
 from slot_store import STATE_CLAIMED, SlotStore
 from spotify_link import LinkManager
 from spotify_web_api import WebApiLinkManager
+from up_next import UpNextManager
 
 log = logging.getLogger("api")
 
 _START_MONOTONIC = time.monotonic()
+
+SLOT_SESSION_SECONDS = 7 * 24 * 3600
+# First path segment after /api/slots/{name}/ that a jam guest may use.
+JAM_ALLOWED_ROUTES = {
+    "player-state", "queue", "search", "library", "albums", "recently-played", "playlists", "player"
+}
+
+
+def _slot_token_mac(password_hash: str, expiry: int) -> str:
+    return hmac.new(password_hash.encode(), f"slot-session:{expiry}".encode(), sha256).hexdigest()
+
+
+def issue_slot_token(password_hash: str) -> str:
+    expiry = int(time.time()) + SLOT_SESSION_SECONDS
+    return f"{expiry}.{_slot_token_mac(password_hash, expiry)}"
+
+
+def verify_slot_token(password_hash: str, token: str) -> bool:
+    try:
+        expiry_str, mac = token.split(".", 1)
+        expiry = int(expiry_str)
+    except ValueError:
+        return False
+    return expiry >= time.time() and hmac.compare_digest(_slot_token_mac(password_hash, expiry), mac)
 
 
 class DiagnosticsApi:
@@ -46,12 +85,21 @@ class DiagnosticsApi:
         slot_store: SlotStore,
         link_manager: LinkManager,
         web_api_link_manager: WebApiLinkManager,
+        jam_manager: JamManager,
+        up_next: UpNextManager,
     ):
         self.client = client
+        self.up_next = up_next
         self.librespot = librespot
         self.slot_store = slot_store
         self.link_manager = link_manager
         self.web_api_link_manager = web_api_link_manager
+        self.jam_manager = jam_manager
+        # Direct-callback outcomes for the dashboard to poll, by user_id; None
+        # while the callback is still finishing. Only "web:" ids -- Discord
+        # users see the outcome on the callback page itself.
+        # ponytail: an abandoned poll leaves its entry behind; a few bytes each.
+        self._callback_results: dict[str, tuple[str, bool] | None] = {}
         self._runner: web.AppRunner | None = None
 
         if not API_TOKEN:
@@ -65,8 +113,29 @@ class DiagnosticsApi:
                 raise web.HTTPUnauthorized(text="missing or invalid bearer token")
         return await handler(request)
 
+    @web.middleware
+    async def _slot_access_middleware(self, request: web.Request, handler):
+        is_admin = request.headers.get("X-Admin") == "1"
+        name = request.match_info.get("name")
+        canonical = request.match_info.route.resource.canonical if request.match_info.route.resource else ""
+        if request.path == "/api/sessions" and not is_admin:
+            raise web.HTTPUnauthorized(text="admin only")
+        if name is not None and canonical != "/api/slots/{name}/select" and not is_admin:
+            route = canonical.removeprefix("/api/slots/{name}/").split("/")[0]
+            if not self._has_slot_access(name, request.headers.get("X-Slot-Token", ""), route):
+                raise web.HTTPUnauthorized(text="unlock this profile first")
+        return await handler(request)
+
+    def _has_slot_access(self, name: str, token: str, route: str) -> bool:
+        meta = self.slot_store.get_by_name(name)
+        if meta is None or not token:
+            return False
+        if route in JAM_ALLOWED_ROUTES and self.jam_manager.slot_index_for_token(token) == meta.index:
+            return True
+        return meta.password_hash is not None and verify_slot_token(meta.password_hash, token)
+
     def _build_app(self) -> web.Application:
-        app = web.Application(middlewares=[self._auth_middleware])
+        app = web.Application(middlewares=[self._auth_middleware, self._slot_access_middleware])
         app.router.add_get("/healthz", self._healthz)
         app.router.add_get("/api/latency", self._latency)
         app.router.add_get("/api/slots", self._slots)
@@ -75,11 +144,15 @@ class DiagnosticsApi:
         app.router.add_post("/api/slots/link/start", self._link_start)
         app.router.add_post("/api/slots/link/finish", self._link_finish)
         app.router.add_post("/api/slots/{name}/select", self._slot_select)
+        app.router.add_get("/api/jam/{token}", self._jam_slot)
+        app.router.add_get("/api/spotify/callback", self._spotify_callback)
         app.router.add_delete("/api/slots/{name}", self._slot_delete)
         app.router.add_post("/api/slots/{name}/web-api-link/start", self._web_api_link_start)
         app.router.add_post("/api/slots/{name}/web-api-link/finish", self._web_api_link_finish)
         app.router.add_get("/api/slots/{name}/player-state", self._player_state)
         app.router.add_post("/api/slots/{name}/queue", self._player_queue_add)
+        app.router.add_post("/api/slots/{name}/up-next/move", self._up_next_move)
+        app.router.add_post("/api/slots/{name}/up-next/remove", self._up_next_remove)
         app.router.add_get("/api/slots/{name}/search", self._player_search)
         app.router.add_get("/api/slots/{name}/library/albums", self._library_albums)
         app.router.add_get("/api/slots/{name}/albums/{album_id}", self._album_detail)
@@ -185,7 +258,13 @@ class DiagnosticsApi:
         content, success = await self.link_manager.start_link(user_id, slot_name, password)
         authorize_url = self.link_manager.authorize_url(user_id)
         return web.json_response(
-            {"message": content, "success": success, "user_id": user_id, "authorize_url": authorize_url}
+            {
+                "message": content,
+                "success": success,
+                "user_id": user_id,
+                "authorize_url": authorize_url,
+                "direct": SPOTIFY_DIRECT_CALLBACK,
+            }
         )
 
     async def _link_finish(self, request: web.Request) -> web.Response:
@@ -194,8 +273,61 @@ class DiagnosticsApi:
         pasted_url = body.get("pasted_url")
         if not user_id:
             raise web.HTTPBadRequest(text="user_id is required")
+        if SPOTIFY_DIRECT_CALLBACK and not pasted_url:
+            return self._poll_callback(self.link_manager, user_id)
         content, success = await self.link_manager.finish_link(user_id, pasted_url)
         return web.json_response({"message": content, "success": success})
+
+    def _poll_callback(self, manager: LinkManager | WebApiLinkManager, user_id: str) -> web.Response:
+        """Direct mode's finish: the callback does the real work, the
+        dashboard just polls here until it has."""
+        if user_id in self._callback_results:
+            result = self._callback_results[user_id]
+            if result is not None:
+                del self._callback_results[user_id]
+                return web.json_response({"message": result[0], "success": result[1]})
+        elif manager.pending_slot_index(user_id) is None:
+            return web.json_response({"success": False, "message": "That login session expired -- start again."})
+        return web.json_response({"pending": True, "success": False, "message": "Waiting for Spotify login..."})
+
+    async def _spotify_callback(self, request: web.Request) -> web.Response:
+        """Public OAuth redirect target for direct mode (config.
+        SPOTIFY_DIRECT_CALLBACK) -- Spotify sends the browser here, via the
+        supervisor's /api proxy, after either /link or /link-web-api. The
+        OAuth state says which pending link it finishes."""
+        state = request.query.get("state", "")
+        user_id = self.link_manager.user_for_state(state)
+        manager = self.link_manager
+        if user_id is None:
+            user_id = self.web_api_link_manager.user_for_state(state)
+            manager = self.web_api_link_manager
+        if user_id is None:
+            return self._callback_page("That login link expired or was already used -- start linking again.", False)
+
+        slot_index = manager.pending_slot_index(user_id)
+        is_web = user_id.startswith("web:")
+        if is_web:
+            self._callback_results[user_id] = None
+        content, success = await manager.finish_link(user_id, str(request.url))
+        if success and slot_index is not None:
+            await self._seed_profile_info(slot_index)
+        if is_web:
+            self._callback_results[user_id] = (content, success)
+        return self._callback_page(content, success)
+
+    @staticmethod
+    def _callback_page(message: str, success: bool) -> web.Response:
+        heading = "Spotify linked" if success else "Spotify link failed"
+        return web.Response(
+            content_type="text/html",
+            text=(
+                "<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width'>"
+                f"<title>{heading}</title>"
+                "<body style='font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 16px'>"
+                f"<h2>{heading}</h2><p>{html.escape(message.replace('**', ''))}</p>"
+                "<p>You can close this tab.</p>"
+            ),
+        )
 
     async def _slot_select(self, request: web.Request) -> web.Response:
         """Verifies a slot's password without joining voice -- the web
@@ -213,6 +345,25 @@ class DiagnosticsApi:
             # seeding existed. Fire-and-forget: the dashboard just shows an
             # initial-letter avatar until the next select() if this fails.
             asyncio.create_task(self._seed_profile_info(meta.index))
+        return web.json_response(
+            {
+                "name": meta.friendly_name,
+                "state": meta.state,
+                "web_api_linked": meta.web_api_refresh_token is not None,
+                "avatar_url": meta.avatar_url,
+                "display_name": meta.spotify_display_name,
+                "slot_token": issue_slot_token(meta.password_hash),
+            }
+        )
+
+    async def _jam_slot(self, request: web.Request) -> web.Response:
+        """No-password equivalent of _slot_select for a live /jam panel's
+        dashboard link (bot/jam.py). Same response shape, so the frontend
+        treats a resolved jam token exactly like an unlocked profile."""
+        slot_index = self.jam_manager.slot_index_for_token(request.match_info["token"])
+        meta = self.slot_store.get_by_index(slot_index) if slot_index is not None else None
+        if meta is None or meta.state != STATE_CLAIMED:
+            raise web.HTTPNotFound(text="this jam has ended")
         return web.json_response(
             {
                 "name": meta.friendly_name,
@@ -239,13 +390,21 @@ class DiagnosticsApi:
         content, success = self.web_api_link_manager.start_link(user_id, meta.index)
         authorize_url = self.web_api_link_manager.authorize_url(user_id)
         return web.json_response(
-            {"message": content, "success": success, "user_id": user_id, "authorize_url": authorize_url}
+            {
+                "message": content,
+                "success": success,
+                "user_id": user_id,
+                "authorize_url": authorize_url,
+                "direct": SPOTIFY_DIRECT_CALLBACK,
+            }
         )
 
     async def _web_api_link_finish(self, request: web.Request) -> web.Response:
         body = await request.json()
         user_id = body.get("user_id", "")
         pasted_url = body.get("pasted_url", "")
+        if user_id and SPOTIFY_DIRECT_CALLBACK and not pasted_url:
+            return self._poll_callback(self.web_api_link_manager, user_id)
         if not user_id or not pasted_url:
             raise web.HTTPBadRequest(text="user_id and pasted_url are required")
         slot_index = self.web_api_link_manager.pending_slot_index(user_id)
@@ -284,25 +443,41 @@ class DiagnosticsApi:
         return token
 
     async def _player_state(self, request: web.Request) -> web.Response:
-        """Now-playing + queue in one round trip -- the dashboard and jam
-        view poll this every few seconds, and now-playing/queue used to be
-        two separate Spotify API calls per poll for no reason (they're
-        always needed together)."""
-        token = await self._get_slot_access_token(request.match_info["name"])
-        now_playing, queue = await asyncio.gather(
-            spotify_player_api.get_now_playing(token),
-            spotify_player_api.get_queue(token),
-        )
-        return web.json_response({"now_playing": now_playing, "queue": queue})
+        """Now-playing + the three queue sections (Spotify app queue, Up
+        next, playlist) in one round trip -- the dashboard and jam view
+        poll this every few seconds. Each poll is also an Up-next snapshot,
+        see up_next.py."""
+        name = request.match_info["name"]
+        await self._get_slot_access_token(name)
+        state = await self.up_next.refresh(self.slot_store.get_by_name(name).index)
+        return web.json_response(state)
 
     async def _player_queue_add(self, request: web.Request) -> web.Response:
-        token = await self._get_slot_access_token(request.match_info["name"])
+        """Adds to the bot's Up next, not Spotify's queue directly -- see
+        up_next.py for why."""
+        name = request.match_info["name"]
+        token = await self._get_slot_access_token(name)
         body = await request.json()
         uri = body.get("uri", "")
         if not uri:
             raise web.HTTPBadRequest(text="uri is required")
-        await spotify_player_api.add_to_queue(token, uri)
+        track = await spotify_player_api.get_track(token, uri)
+        await self.up_next.add(self.slot_store.get_by_name(name).index, [track])
         return web.json_response({"queued": uri})
+
+    async def _up_next_move(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        slot_index = self.slot_store.get_by_name(request.match_info["name"]).index
+        if not await self.up_next.move(slot_index, body.get("id", ""), int(body.get("to", 0))):
+            raise web.HTTPNotFound(text="no such Up next entry -- it may already be playing")
+        return web.json_response({"ok": True})
+
+    async def _up_next_remove(self, request: web.Request) -> web.Response:
+        body = await request.json()
+        slot_index = self.slot_store.get_by_name(request.match_info["name"]).index
+        if not await self.up_next.remove(slot_index, body.get("id", "")):
+            raise web.HTTPNotFound(text="no such Up next entry -- it may already be playing")
+        return web.json_response({"ok": True})
 
     async def _player_search(self, request: web.Request) -> web.Response:
         token = await self._get_slot_access_token(request.match_info["name"])
@@ -345,7 +520,14 @@ class DiagnosticsApi:
         if error:
             raise web.HTTPBadRequest(text=error)
         updated = self.slot_store.get_by_index(meta.index)
-        return web.json_response({"name": updated.friendly_name, "avatar_url": updated.avatar_url})
+        return web.json_response(
+            {
+                "name": updated.friendly_name,
+                "avatar_url": updated.avatar_url,
+                # Fresh token: a password change invalidates the old one.
+                "slot_token": issue_slot_token(updated.password_hash),
+            }
+        )
 
     async def _recently_played(self, request: web.Request) -> web.Response:
         token = await self._get_slot_access_token(request.match_info["name"])
@@ -380,13 +562,11 @@ class DiagnosticsApi:
         return web.json_response({"ok": True})
 
     async def _playlist_queue_all(self, request: web.Request) -> web.Response:
-        """Spotify's queue endpoint only takes one track at a time -- no
-        batch/context form -- so a whole-playlist queue is just this loop."""
-        token = await self._get_slot_access_token(request.match_info["name"])
+        name = request.match_info["name"]
+        token = await self._get_slot_access_token(name)
         playlist = await spotify_player_api.get_playlist(token, request.match_info["playlist_id"])
         tracks = [item["track"] for item in playlist.get("tracks", {}).get("items", []) if item.get("track")]
-        for track in tracks:
-            await spotify_player_api.add_to_queue(token, track["uri"])
+        await self.up_next.add(self.slot_store.get_by_name(name).index, tracks)
         return web.json_response({"queued": len(tracks)})
 
     async def _player_play_track(self, request: web.Request) -> web.Response:

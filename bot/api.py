@@ -195,7 +195,6 @@ class DiagnosticsApi:
         app.router.add_get("/api/slots/{name}/recently-played", self._recently_played)
         app.router.add_get("/api/slots/{name}/playlists", self._playlists)
         app.router.add_get("/api/slots/{name}/playlists/{playlist_id}", self._playlist_detail)
-        app.router.add_get("/api/slots/{name}/playlists/{playlist_id}/track-count", self._playlist_track_count)
         app.router.add_post("/api/slots/{name}/playlists/{playlist_id}/play", self._playlist_play)
         app.router.add_post("/api/slots/{name}/playlists/{playlist_id}/queue-all", self._playlist_queue_all)
         app.router.add_post("/api/slots/{name}/player/play-track", self._player_play_track)
@@ -687,14 +686,6 @@ class DiagnosticsApi:
         playlist = await spotify_player_api.get_playlist(token, request.match_info["playlist_id"])
         return web.json_response(playlist)
 
-    async def _playlist_track_count(self, request: web.Request) -> web.Response:
-        """/me/playlists (the _playlists route above) always reports 0 for
-        tracks.total -- a Spotify API bug -- so the grid fetches the real
-        count per tile from here instead, off the single-playlist endpoint."""
-        token = await self._get_slot_access_token(request.match_info["name"])
-        total = await spotify_player_api.get_playlist_track_count(token, request.match_info["playlist_id"])
-        return web.json_response({"total": total})
-
     async def _playlist_play(self, request: web.Request) -> web.Response:
         token = await self._get_slot_access_token(request.match_info["name"])
         await spotify_player_api.play_context(token, f"spotify:playlist:{request.match_info['playlist_id']}")
@@ -704,7 +695,7 @@ class DiagnosticsApi:
         name = request.match_info["name"]
         token = await self._get_slot_access_token(name)
         playlist = await spotify_player_api.get_playlist(token, request.match_info["playlist_id"])
-        tracks = [item["track"] for item in playlist.get("tracks", {}).get("items", []) if item.get("track")]
+        tracks = spotify_player_api.playlist_tracks(playlist)
         await self.up_next.add(self.slot_store.get_by_name(name).index, tracks)
         return web.json_response({"queued": len(tracks)})
 

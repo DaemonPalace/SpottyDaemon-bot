@@ -32,6 +32,9 @@ log = logging.getLogger("up_next")
 
 UP_NEXT_PATH = os.environ.get("UP_NEXT_PATH", os.path.join(LIBRESPOT_CACHE_DIR, "up_next.json"))
 POLL_SECONDS = 3
+# Every open dashboard tab and jam guest polls player-state; within this
+# window they share one pair of Spotify calls instead of each making its own.
+SHARE_SECONDS = 2
 # Hand the next Up-next song to Spotify once the current song has this
 # little left -- several polls' worth, so a slow poll can't miss it.
 HANDOFF_MS = 15_000
@@ -187,6 +190,7 @@ class UpNextManager:
         self._trackers: dict[int, QueueTracker] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._last_refresh: dict[int, float] = {}
+        self._shared: dict[int, tuple[float, tuple]] = {}
 
     def _load(self) -> dict[int, dict]:
         if not os.path.exists(self.path):
@@ -251,10 +255,15 @@ class UpNextManager:
         if token is None:
             return None
         async with self._lock(slot_index):
-            now_playing, queue = await asyncio.gather(
-                spotify_player_api.get_now_playing(token),
-                spotify_player_api.get_queue(token),
-            )
+            shared = self._shared.get(slot_index)
+            if shared and time.monotonic() - shared[0] < SHARE_SECONDS:
+                now_playing, queue = shared[1]
+            else:
+                now_playing, queue = await asyncio.gather(
+                    spotify_player_api.get_now_playing(token),
+                    spotify_player_api.get_queue(token),
+                )
+                self._shared[slot_index] = (time.monotonic(), (now_playing, queue))
             state = self._slot_state(slot_index)
             tracker = self._trackers.get(slot_index)
             if tracker is None:

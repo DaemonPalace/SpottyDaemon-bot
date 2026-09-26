@@ -327,22 +327,18 @@ async def get_playlist(access_token: str, playlist_id: str) -> dict:
             return await resp.json()
 
 
-async def get_playlist_track_count(access_token: str, playlist_id: str) -> int:
-    """GET /me/playlists (get_playlists above) always reports tracks.total
-    as 0 -- a longstanding Spotify API bug -- but the single-playlist
-    endpoint reports it correctly, so the frontend fetches this per tile
-    to fix up the grid's track counts."""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"{API_BASE}/playlists/{playlist_id}",
-            params={"fields": "tracks.total"},
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=aiohttp.ClientTimeout(total=10),
-        ) as resp:
-            if resp.status >= 300:
-                raise await _error("get_playlist_track_count", resp)
-            body = await resp.json()
-            return (body.get("tracks") or {}).get("total", 0)
+def playlist_tracks(playlist: dict) -> list[dict]:
+    """A playlist's track objects. Feb 2026 renamed tracks -> items and
+    tracks[].track -> items[].item (the old track key can linger as a
+    boolean), so take whichever is an actual object."""
+    page = playlist.get("items") if isinstance(playlist.get("items"), dict) else playlist.get("tracks") or {}
+    tracks = []
+    for row in page.get("items") or []:
+        row = row or {}
+        track = row.get("item") if isinstance(row.get("item"), dict) else row.get("track")
+        if isinstance(track, dict):
+            tracks.append(track)
+    return tracks
 
 
 async def get_current_user_profile(access_token: str) -> dict | None:

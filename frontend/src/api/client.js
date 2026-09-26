@@ -109,8 +109,6 @@ export const getRecentlyPlayed = (name) => request("GET", `/api/slots/${encodeUR
 export const getPlaylists = (name) => request("GET", `/api/slots/${encodeURIComponent(name)}/playlists`);
 export const getPlaylist = (name, playlistId) =>
   request("GET", `/api/slots/${encodeURIComponent(name)}/playlists/${encodeURIComponent(playlistId)}`);
-export const getPlaylistTrackCount = (name, playlistId) =>
-  request("GET", `/api/slots/${encodeURIComponent(name)}/playlists/${encodeURIComponent(playlistId)}/track-count`);
 export const playPlaylist = (name, playlistId) =>
   request("POST", `/api/slots/${encodeURIComponent(name)}/playlists/${encodeURIComponent(playlistId)}/play`, {});
 export const queuePlaylist = (name, playlistId) =>

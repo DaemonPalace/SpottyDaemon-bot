@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlbumArt, TrackThumb, formatDuration } from "./Player";
+import { AlbumArt, TrackThumb, formatDuration, playlistTracks } from "./Player";
 
 const PLAY_ERROR = "Couldn't do that -- make sure the bot is connected to a voice channel first.";
 
@@ -402,7 +402,7 @@ function PlaylistView({ item, api, actions }) {
   const { data, error } = useDetail(api.getPlaylist, item.id);
   const playlist = data || item;
   const [run, message] = useAction();
-  const tracks = (data?.tracks?.items || []).map((i) => i.track).filter(Boolean);
+  const tracks = playlistTracks(data);
   const listable = tracks.length > 0;
 
   return (

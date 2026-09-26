@@ -4,6 +4,20 @@ export function trackArtists(track) {
   return (track.artists || []).map((a) => a.name).join(", ");
 }
 
+/** A playlist's track objects -- Feb 2026 renamed tracks -> items and
+ * tracks[].track -> items[].item (old track key can linger as a boolean). */
+export function playlistTracks(playlist) {
+  const page = typeof playlist?.items === "object" ? playlist.items : playlist?.tracks;
+  return (page?.items || [])
+    .map((row) => [row?.item, row?.track].find((t) => t && typeof t === "object"))
+    .filter(Boolean);
+}
+
+/** Track count straight off a /me/playlists entry, either field name. */
+export function playlistTotal(playlist) {
+  return (typeof playlist?.items === "object" ? playlist.items : playlist?.tracks)?.total;
+}
+
 export function formatDuration(ms) {
   if (!ms && ms !== 0) return "";
   const totalSeconds = Math.round(ms / 1000);

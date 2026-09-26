@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlbumArt, TrackThumb, trackArtists } from "./Player";
+import { AlbumArt, TrackThumb, playlistTotal, playlistTracks, trackArtists } from "./Player";
 
 /** Playlist grid + track-list detail, mirroring AlbumLibrary's shape
  * (getPlaylists/getPlaylist instead of getAlbums/getAlbumDetail). */
@@ -7,7 +7,6 @@ export default function PlaylistGrid({
   name,
   getPlaylists,
   getPlaylist,
-  getPlaylistTrackCount,
   onAdd,
   onPlayNow,
   onPlayPlaylist,
@@ -31,20 +30,6 @@ export default function PlaylistGrid({
           return;
         }
         setState({ status: "ready", playlists: data.playlists });
-        // /me/playlists always reports tracks.total as 0 (a Spotify API
-        // bug) -- fetch the real count per tile in the background and
-        // patch it in as each one resolves, without blocking the grid.
-        data.playlists.forEach((playlist) => {
-          getPlaylistTrackCount(name, playlist.id)
-            .then(({ total }) => {
-              if (cancelled) return;
-              setState((current) => ({
-                ...current,
-                playlists: current.playlists.map((p) => (p.id === playlist.id ? { ...p, _trackCount: total } : p)),
-              }));
-            })
-            .catch(() => {});
-        });
       } catch (err) {
         if (!cancelled) setState({ status: "error", playlists: [], error: err.message });
       }
@@ -52,12 +37,12 @@ export default function PlaylistGrid({
     return () => {
       cancelled = true;
     };
-  }, [name, getPlaylists, getPlaylistTrackCount]);
+  }, [name, getPlaylists]);
 
   async function openPlaylist(playlist) {
     setSelected({ playlist, tracks: null });
     const detail = await getPlaylist(name, playlist.id);
-    setSelected({ playlist, tracks: (detail.tracks?.items || []).map((i) => i.track).filter(Boolean) });
+    setSelected({ playlist, tracks: playlistTracks(detail) });
   }
 
   async function handleAdd(track) {
@@ -142,7 +127,7 @@ export default function PlaylistGrid({
           <button key={playlist.id} className="album-tile" onClick={() => openPlaylist(playlist)}>
             <AlbumArt images={playlist.images} alt={playlist.name} size="md" />
             <span className="album-tile-name">{playlist.name}</span>
-            <span className="album-tile-artist">{playlist._trackCount ?? "…"} tracks</span>
+            <span className="album-tile-artist">{playlistTotal(playlist) ?? "…"} tracks</span>
           </button>
         ))}
       </div>

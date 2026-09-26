@@ -40,21 +40,57 @@ async def get_queue(access_token: str) -> dict:
             return await resp.json()
 
 
-async def search_tracks(access_token: str, query: str) -> list[dict]:
-    # No `limit` param -- as of writing, Spotify's /search rejects it
-    # outright ("Invalid limit") regardless of value. Its default page size
-    # (20) is plenty for an inline dropdown; the frontend trims further.
+async def search(access_token: str, query: str, types: str, offset: int = 0) -> dict:
+    """One /search call for any mix of track/artist/album/playlist, as
+    {"tracks": {"items": [...], "next": ...}, "artists": ...}. No `limit`
+    param -- Spotify's /search rejects it ("Invalid limit") and pages at 10
+    in Development Mode; callers page with `offset`. Playlist results can
+    contain null entries, dropped here."""
     async with aiohttp.ClientSession() as session:
         async with session.get(
             f"{API_BASE}/search",
-            params={"q": query, "type": "track"},
+            params={"q": query, "type": types, "offset": offset},
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status >= 300:
-                raise RuntimeError(f"search_tracks failed ({resp.status}): {await resp.text()}")
+                raise RuntimeError(f"search failed ({resp.status}): {await resp.text()}")
             body = await resp.json()
-            return body.get("tracks", {}).get("items", [])
+            for paging in body.values():
+                paging["items"] = [item for item in paging.get("items", []) if item]
+            return body
+
+
+async def search_tracks(access_token: str, query: str) -> list[dict]:
+    return (await search(access_token, query, "track"))["tracks"]["items"]
+
+
+async def get_artist(access_token: str, artist_id: str) -> dict:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{API_BASE}/artists/{artist_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status >= 300:
+                raise RuntimeError(f"get_artist failed ({resp.status}): {await resp.text()}")
+            return await resp.json()
+
+
+async def get_artist_albums(access_token: str, artist_id: str) -> list[dict]:
+    """Albums and singles/EPs, first page only (Spotify's default size).
+    ponytail: one page, add offset paging if long discographies get cut."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{API_BASE}/artists/{artist_id}/albums",
+            params={"include_groups": "album,single"},
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status >= 300:
+                raise RuntimeError(f"get_artist_albums failed ({resp.status}): {await resp.text()}")
+            body = await resp.json()
+            return [album for album in body.get("items", []) if album]
 
 
 async def get_saved_albums(access_token: str, limit: int = 50) -> list[dict] | None:

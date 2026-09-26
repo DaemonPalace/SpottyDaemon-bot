@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   addToQueue,
   moveUpNext,
   removeUpNext,
   getAlbum,
+  getArtist,
   getJamSlot,
   getLibraryAlbums,
   getPlayerState,
@@ -16,15 +17,18 @@ import {
   nextTrack,
   pausePlayback,
   playPlayback,
+  playContext,
   playPlaylist,
   playTrack,
   previousTrack,
+  queueAlbum,
   queuePlaylist,
-  searchTracks,
+  searchSpotify,
   seekPlayback,
   setPlaybackVolume,
 } from "../api/client";
 import AdminSettingsModal from "../components/AdminSettingsModal";
+import { DetailView, SearchResults } from "../components/Browse";
 import NowPlayingBar from "../components/NowPlayingBar";
 import PasswordPromptModal from "../components/PasswordPromptModal";
 import { AlbumLibrary, QueueList } from "../components/Player";
@@ -50,6 +54,28 @@ export default function SlotProfile() {
   const [showSettings, setShowSettings] = useState(false);
   const [showAdminSettings, setShowAdminSettings] = useState(false);
   const name = jamToken ? unlocked?.name : routeName;
+  const [query, setQuery] = useState("");
+  // Artist/album/playlist views opened from search, innermost last; Back pops.
+  const [views, setViews] = useState([]);
+  const onQueryChange = useCallback((q) => {
+    setQuery(q);
+    setViews([]);
+  }, []);
+  // Slot-bound fetchers for Browse.jsx -- memoized so its fetch effects
+  // only re-run when the slot changes.
+  const browseApi = useMemo(
+    () => ({
+      search: (q, type, offset) => searchSpotify(name, q, type, offset),
+      getArtist: (id) => getArtist(name, id),
+      getAlbum: (id) => getAlbum(name, id),
+      getPlaylist: (id) => getPlaylist(name, id),
+      playContext: (uri) => playContext(name, uri),
+      queueAlbum: (id) => queueAlbum(name, id),
+      playPlaylist: (id) => playPlaylist(name, id),
+      queuePlaylist: (id) => queuePlaylist(name, id),
+    }),
+    [name]
+  );
   // Set during render, not in an effect: child components' fetch effects
   // run before this component's own effects would.
   setSlotToken(jamToken || unlocked?.slot_token);
@@ -136,6 +162,13 @@ export default function SlotProfile() {
     refresh();
   }
 
+  const browseActions = {
+    guest: Boolean(jamToken),
+    onAdd: handleAdd,
+    onPlayNow: handlePlayNow,
+    onOpen: (view) => setViews((current) => [...current, view]),
+  };
+
   async function handlePlayPause() {
     if (nowPlaying?.is_playing) await pausePlayback(name);
     else await playPlayback(name);
@@ -158,7 +191,7 @@ export default function SlotProfile() {
   return (
     <div className="dashboard">
       <header className="dashboard-header">
-        <SearchBar search={(q) => searchTracks(name, q)} onAdd={handleAdd} onPlayNow={handlePlayNow} />
+        <SearchBar onQueryChange={onQueryChange} />
         {jamToken ? (
           <div className="settings-btn">
             <ProfileCircle name={name} avatarUrl={unlocked.avatar_url} size="sm" />
@@ -196,32 +229,45 @@ export default function SlotProfile() {
           {webApiLinked ? (
             <>
               {playerError && playerError.status !== 400 && <p className="error">{playerError.message}</p>}
-              <RecentlyPlayedRow
-                name={name}
-                getRecentlyPlayed={getRecentlyPlayed}
-                onAdd={handleAdd}
-                onPlayNow={handlePlayNow}
-                relinkPrompt={relinkPrompt("Recently played needs a fresh Spotify permission.")}
-              />
-              <PlaylistGrid
-                name={name}
-                getPlaylists={getPlaylists}
-                getPlaylist={getPlaylist}
-                getPlaylistTrackCount={getPlaylistTrackCount}
-                onAdd={handleAdd}
-                onPlayNow={handlePlayNow}
-                onPlayPlaylist={handlePlayPlaylist}
-                onQueuePlaylist={handleQueuePlaylist}
-                relinkPrompt={relinkPrompt("Playlists need a fresh Spotify permission.")}
-              />
-              <AlbumLibrary
-                name={name}
-                getAlbums={getLibraryAlbums}
-                getAlbumDetail={getAlbum}
-                onAdd={handleAdd}
-                onPlayNow={handlePlayNow}
-                relinkPrompt={relinkPrompt("Your library needs a fresh Spotify permission to show saved albums.")}
-              />
+              {views.length > 0 ? (
+                <DetailView
+                  view={views[views.length - 1]}
+                  api={browseApi}
+                  actions={browseActions}
+                  onBack={() => setViews((current) => current.slice(0, -1))}
+                />
+              ) : query ? (
+                <SearchResults q={query} search={browseApi.search} actions={browseActions} />
+              ) : (
+                <>
+                  <RecentlyPlayedRow
+                    name={name}
+                    getRecentlyPlayed={getRecentlyPlayed}
+                    onAdd={handleAdd}
+                    onPlayNow={handlePlayNow}
+                    relinkPrompt={relinkPrompt("Recently played needs a fresh Spotify permission.")}
+                  />
+                  <PlaylistGrid
+                    name={name}
+                    getPlaylists={getPlaylists}
+                    getPlaylist={getPlaylist}
+                    getPlaylistTrackCount={getPlaylistTrackCount}
+                    onAdd={handleAdd}
+                    onPlayNow={handlePlayNow}
+                    onPlayPlaylist={handlePlayPlaylist}
+                    onQueuePlaylist={handleQueuePlaylist}
+                    relinkPrompt={relinkPrompt("Playlists need a fresh Spotify permission.")}
+                  />
+                  <AlbumLibrary
+                    name={name}
+                    getAlbums={getLibraryAlbums}
+                    getAlbumDetail={getAlbum}
+                    onAdd={handleAdd}
+                    onPlayNow={handlePlayNow}
+                    relinkPrompt={relinkPrompt("Your library needs a fresh Spotify permission to show saved albums.")}
+                  />
+                </>
+              )}
             </>
           ) : (
             <div className="card">

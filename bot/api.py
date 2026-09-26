@@ -49,8 +49,9 @@ _START_MONOTONIC = time.monotonic()
 SLOT_SESSION_SECONDS = 7 * 24 * 3600
 # First path segment after /api/slots/{name}/ that a jam guest may use.
 JAM_ALLOWED_ROUTES = {
-    "player-state", "queue", "search", "library", "albums", "recently-played", "playlists", "player"
+    "player-state", "queue", "search", "library", "albums", "artists", "recently-played", "playlists", "player"
 }
+SEARCH_TYPES = {"track", "artist", "album", "playlist"}
 
 
 def _slot_token_mac(password_hash: str, expiry: int) -> str:
@@ -156,6 +157,8 @@ class DiagnosticsApi:
         app.router.add_get("/api/slots/{name}/search", self._player_search)
         app.router.add_get("/api/slots/{name}/library/albums", self._library_albums)
         app.router.add_get("/api/slots/{name}/albums/{album_id}", self._album_detail)
+        app.router.add_post("/api/slots/{name}/albums/{album_id}/queue-all", self._album_queue_all)
+        app.router.add_get("/api/slots/{name}/artists/{artist_id}", self._artist_detail)
         app.router.add_post("/api/slots/{name}/settings", self._slot_settings)
         app.router.add_get("/api/slots/{name}/recently-played", self._recently_played)
         app.router.add_get("/api/slots/{name}/playlists", self._playlists)
@@ -165,6 +168,7 @@ class DiagnosticsApi:
         app.router.add_post("/api/slots/{name}/playlists/{playlist_id}/queue-all", self._playlist_queue_all)
         app.router.add_post("/api/slots/{name}/player/play-track", self._player_play_track)
         app.router.add_post("/api/slots/{name}/player/play", self._player_play)
+        app.router.add_post("/api/slots/{name}/player/play-context", self._player_play_context)
         app.router.add_post("/api/slots/{name}/player/pause", self._player_pause)
         app.router.add_post("/api/slots/{name}/player/next", self._player_next)
         app.router.add_post("/api/slots/{name}/player/previous", self._player_previous)
@@ -480,12 +484,43 @@ class DiagnosticsApi:
         return web.json_response({"ok": True})
 
     async def _player_search(self, request: web.Request) -> web.Response:
+        """?q=...&type=track,artist,album,playlist (default: all four)
+        &offset=N. Returns {"tracks": {"items", "next"}, "artists": ...}
+        for each requested type -- `next` non-null means Show more has
+        another page."""
         token = await self._get_slot_access_token(request.match_info["name"])
         query = request.query.get("q", "").strip()
+        types = request.query.get("type", "track,artist,album,playlist")
+        if not set(types.split(",")) <= SEARCH_TYPES:
+            raise web.HTTPBadRequest(text=f"type must be a comma list of {sorted(SEARCH_TYPES)}")
         if not query:
-            return web.json_response({"tracks": []})
-        tracks = await spotify_player_api.search_tracks(token, query)
-        return web.json_response({"tracks": tracks})
+            return web.json_response({f"{t}s": {"items": [], "next": None} for t in types.split(",")})
+        try:
+            offset = int(request.query.get("offset", 0))
+        except ValueError:
+            raise web.HTTPBadRequest(text="offset must be an integer")
+        return web.json_response(await spotify_player_api.search(token, query, types, offset))
+
+    async def _artist_detail(self, request: web.Request) -> web.Response:
+        """Artist header + albums/singles in one round trip. There's no
+        top-tracks list any more (removed Feb 2026) -- the dashboard fills
+        "Songs by" from an artist:"Name" search instead."""
+        token = await self._get_slot_access_token(request.match_info["name"])
+        artist_id = request.match_info["artist_id"]
+        artist, albums = await asyncio.gather(
+            spotify_player_api.get_artist(token, artist_id),
+            spotify_player_api.get_artist_albums(token, artist_id),
+        )
+        return web.json_response({"artist": artist, "albums": albums})
+
+    async def _album_queue_all(self, request: web.Request) -> web.Response:
+        name = request.match_info["name"]
+        token = await self._get_slot_access_token(name)
+        album = await spotify_player_api.get_album(token, request.match_info["album_id"])
+        # Album track objects carry no "album" of their own -- the queue panel needs its art.
+        tracks = [{**t, "album": album} for t in album.get("tracks", {}).get("items", []) if t]
+        await self.up_next.add(self.slot_store.get_by_name(name).index, tracks)
+        return web.json_response({"queued": len(tracks)})
 
     async def _library_albums(self, request: web.Request) -> web.Response:
         token = await self._get_slot_access_token(request.match_info["name"])
@@ -581,6 +616,16 @@ class DiagnosticsApi:
     async def _player_play(self, request: web.Request) -> web.Response:
         token = await self._get_slot_access_token(request.match_info["name"])
         await spotify_player_api.play(token)
+        return web.json_response({"ok": True})
+
+    async def _player_play_context(self, request: web.Request) -> web.Response:
+        """Plays an album, artist or playlist URI as the context."""
+        token = await self._get_slot_access_token(request.match_info["name"])
+        body = await request.json()
+        uri = body.get("uri", "")
+        if uri.split(":")[:2] not in (["spotify", "album"], ["spotify", "artist"], ["spotify", "playlist"]):
+            raise web.HTTPBadRequest(text="uri must be a spotify album, artist or playlist URI")
+        await spotify_player_api.play_context(token, uri)
         return web.json_response({"ok": True})
 
     async def _player_pause(self, request: web.Request) -> web.Response:

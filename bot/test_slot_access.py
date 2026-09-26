@@ -46,8 +46,13 @@ async def main():
         return web.json_response({"ok": True})
 
     # Stub every gated handler out -- only the middleware is under test.
-    for attr in ("_player_state", "_slot_settings", "_web_api_link_start", "_slot_delete", "_sessions"):
+    for attr in ("_player_state", "_slot_settings", "_web_api_link_start", "_slot_delete", "_sessions", "_artist_detail"):
         setattr(diag, attr, ok)
+
+    async def fake_token(name):
+        return "t"
+
+    diag._get_slot_access_token = fake_token
 
     async with TestClient(TestServer(diag._build_app())) as client:
 
@@ -66,6 +71,13 @@ async def main():
         assert await status("POST", "/api/slots/alice/settings", **{"X-Slot-Token": "jamtok"}) == 401
         assert await status("POST", "/api/slots/alice/web-api-link/start", **{"X-Slot-Token": "jamtok"}) == 401
         assert await status("DELETE", "/api/slots/alice", **{"X-Slot-Token": "jamtok"}) == 401
+        # Jam guests browse artists; bad search types and non-context URIs are rejected before Spotify.
+        assert await status("GET", "/api/slots/alice/artists/x", **{"X-Slot-Token": "jamtok"}) == 200
+        assert await status("GET", "/api/slots/alice/search?q=a&type=show", **{"X-Slot-Token": "jamtok"}) == 400
+        async with client.post(
+            "/api/slots/alice/player/play-context", json={"uri": "spotify:track:x"}, headers={"X-Slot-Token": "jamtok"}
+        ) as resp:
+            assert resp.status == 400
         # Password change invalidates old sessions.
         store.slot.password_hash = hash_password("new")
         assert await status("GET", state, **{"X-Slot-Token": good}) == 401

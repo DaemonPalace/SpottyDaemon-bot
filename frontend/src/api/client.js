@@ -71,8 +71,18 @@ export const removeUpNext = (name, id) =>
   request("POST", `/api/slots/${encodeURIComponent(name)}/up-next/remove`, { id });
 export const playTrack = (name, uri) =>
   request("POST", `/api/slots/${encodeURIComponent(name)}/player/play-track`, { uri });
-export const searchTracks = (name, q) =>
-  request("GET", `/api/slots/${encodeURIComponent(name)}/search?q=${encodeURIComponent(q)}`);
+// type: comma list of track/artist/album/playlist (server default: all four).
+export const searchSpotify = (name, q, type, offset = 0) =>
+  request(
+    "GET",
+    `/api/slots/${encodeURIComponent(name)}/search?${new URLSearchParams({ q, offset, ...(type && { type }) })}`
+  );
+export const getArtist = (name, artistId) =>
+  request("GET", `/api/slots/${encodeURIComponent(name)}/artists/${encodeURIComponent(artistId)}`);
+export const queueAlbum = (name, albumId) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/albums/${encodeURIComponent(albumId)}/queue-all`, {});
+export const playContext = (name, uri) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/player/play-context`, { uri });
 export const playPlayback = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/player/play`, {});
 export const pausePlayback = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/player/pause`, {});
 export const nextTrack = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/player/next`, {});

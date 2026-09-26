@@ -13,8 +13,8 @@ import {
   getPlayerState,
   getPlaylist,
   getPlaylists,
-  getPlaylistTrackCount,
   getRecentlyPlayed,
+  logout,
   setSlotToken,
   nextTrack,
   pausePlayback,
@@ -138,6 +138,9 @@ export default function SlotProfile() {
           finish={(_name, userId, url) => finishLink(userId, url || null)}
           onLinked={(direct) => setUnlocked({ ...unlocked, state: "claimed", web_api_linked: direct })}
         />
+        <button type="button" className="ghost" onClick={handleLogout}>
+          Log out
+        </button>
       </div>
     );
   }
@@ -193,6 +196,14 @@ export default function SlotProfile() {
     refresh();
   }
 
+  // Replacing this history entry drops the slot token kept in its state, so
+  // Back can't reopen the profile. Also ends any admin session on this browser.
+  async function handleLogout() {
+    await logout().catch(() => {});
+    setSlotToken(null);
+    navigate("/slots", { replace: true });
+  }
+
   async function handleSettingsUpdated(data) {
     setShowSettings(false);
     if (data.name !== name) {
@@ -229,6 +240,9 @@ export default function SlotProfile() {
               title="Admin settings"
             >
               ⚙
+            </button>
+            <button type="button" className="ghost" onClick={handleLogout}>
+              Log out
             </button>
           </>
         )}
@@ -269,7 +283,6 @@ export default function SlotProfile() {
                     name={name}
                     getPlaylists={getPlaylists}
                     getPlaylist={getPlaylist}
-                    getPlaylistTrackCount={getPlaylistTrackCount}
                     onAdd={handleAdd}
                     onPlayNow={handlePlayNow}
                     onPlayPlaylist={handlePlayPlaylist}

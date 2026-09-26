@@ -128,6 +128,30 @@ class DiagnosticsApi:
                 raise web.HTTPUnauthorized(text="unlock this profile first")
         return await handler(request)
 
+    @web.middleware
+    async def _spotify_error_middleware(self, request: web.Request, handler):
+        """Spotify's 429 (rate limit) and 403 (account not on a
+        development-mode app's allowlist) become a readable message instead
+        of a 500; a 429 also pauses Web API calls for that slot."""
+        try:
+            return await handler(request)
+        except spotify_player_api.SpotifyApiError as err:
+            if err.status == 429:
+                wait = min(err.retry_after or 60, 3600)
+                meta = self.slot_store.get_by_name(request.match_info.get("name", ""))
+                if meta is not None:
+                    self.web_api_link_manager.block(meta.index, wait)
+                message = f"Spotify is rate-limiting this bot -- try again in {max(1, wait // 60)} min."
+            elif err.status == 403:
+                message = (
+                    "Spotify won't let this account use the bot's Spotify app for this. "
+                    "Relink the profile to fix it."
+                )
+            else:
+                raise
+            log.warning("%s -> %s", request.path, err)
+            return web.json_response({"message": message}, status=err.status)
+
     def _has_slot_access(self, name: str, token: str, route: str) -> bool:
         meta = self.slot_store.get_by_name(name)
         if meta is None or not token:
@@ -137,7 +161,7 @@ class DiagnosticsApi:
         return meta.password_hash is not None and verify_slot_token(meta.password_hash, token)
 
     def _build_app(self) -> web.Application:
-        app = web.Application(middlewares=[self._auth_middleware, self._slot_access_middleware])
+        app = web.Application(middlewares=[self._auth_middleware, self._slot_access_middleware, self._spotify_error_middleware])
         app.router.add_get("/healthz", self._healthz)
         app.router.add_get("/api/latency", self._latency)
         app.router.add_get("/api/slots", self._slots)

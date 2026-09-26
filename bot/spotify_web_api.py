@@ -28,6 +28,7 @@ import aiohttp
 
 import config
 from slot_store import SlotStore
+from spotify_player_api import SpotifyApiError
 
 log = logging.getLogger("spotify_web_api")
 
@@ -158,6 +159,13 @@ class WebApiLinkManager:
         self.store = store
         self._pending: dict[str, _PendingWebApiLink] = {}
         self._cache: dict[int, _CachedAccessToken] = {}
+        # Slot -> monotonic time Spotify's rate limit (429) lifts. Every Web
+        # API call for a slot gets its token here, so refusing one while
+        # blocked keeps the dashboard's polling from extending the limit.
+        self._blocked_until: dict[int, float] = {}
+
+    def block(self, slot_index: int, seconds: int) -> None:
+        self._blocked_until[slot_index] = time.monotonic() + seconds
 
     def pending_slot_index(self, user_id: str) -> int | None:
         """For callers (bot/api.py) that need the slot a pending link will
@@ -256,6 +264,9 @@ class WebApiLinkManager:
     async def get_access_token(self, slot_index: int) -> str | None:
         """Lazily refreshes as needed. Returns None if the slot has never
         completed /link-web-api."""
+        remaining = self._blocked_until.get(slot_index, 0) - time.monotonic()
+        if remaining > 0:
+            raise SpotifyApiError("rate limit cooldown", 429, "", int(remaining) + 1)
         cached = self._cache.get(slot_index)
         if cached is not None and cached.expires_at - _EXPIRY_SAFETY_MARGIN_SECONDS > time.monotonic():
             return cached.access_token

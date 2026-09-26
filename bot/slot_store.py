@@ -67,6 +67,10 @@ class SlotMetadata:
     # /link-web-api completes; wiped by reset() same as everything else.
     web_api_refresh_token: str | None = None
     web_api_linked_at: float | None = None
+    # Which Spotify client issued the refresh token -- refreshing needs the
+    # same one. None means our own app for this slot (spotify_web_api.
+    # app_for_slot); /link stores librespot's client id here.
+    web_api_client_id: str | None = None
     # Profile-selector display info. avatar_url defaults to the linked
     # Spotify account's own picture (set once by the web-api-link/finish
     # route) and can be overridden by the slot's own settings screen.
@@ -99,6 +103,7 @@ class SlotStore:
                     claimed_at=entry.get("claimed_at"),
                     web_api_refresh_token=entry.get("web_api_refresh_token"),
                     web_api_linked_at=entry.get("web_api_linked_at"),
+                    web_api_client_id=entry.get("web_api_client_id"),
                     avatar_url=entry.get("avatar_url"),
                     spotify_display_name=entry.get("spotify_display_name"),
                 )
@@ -122,6 +127,7 @@ class SlotStore:
                     "claimed_at": slot.claimed_at,
                     "web_api_refresh_token": slot.web_api_refresh_token,
                     "web_api_linked_at": slot.web_api_linked_at,
+                    "web_api_client_id": slot.web_api_client_id,
                     "avatar_url": slot.avatar_url,
                     "spotify_display_name": slot.spotify_display_name,
                 }
@@ -173,10 +179,11 @@ class SlotStore:
             slot.claimed_at = time.time()
             self._save_locked()
 
-    async def set_web_api_token(self, index: int, refresh_token: str) -> None:
+    async def set_web_api_token(self, index: int, refresh_token: str, client_id: str | None = None) -> None:
         async with self._lock:
             slot = self._slots[index]
             slot.web_api_refresh_token = refresh_token
+            slot.web_api_client_id = client_id
             slot.web_api_linked_at = time.time()
             self._save_locked()
 

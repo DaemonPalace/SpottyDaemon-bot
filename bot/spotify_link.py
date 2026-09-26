@@ -1,52 +1,37 @@
 """Self-serve Spotify account linking for a free slot.
 
-librespot's built-in OAuth (`--enable-oauth`) uses Spotify's own client
-registration, which only accepts a loopback (127.0.0.1) redirect URI -- there
-is no way to make Spotify redirect a friend's browser straight back to a
-public EC2 address, so we can't just open a port and hand out a link.
+Logs in through librespot's own OAuth client (spotify_web_api.
+LIBRESPOT_CLIENT_ID) rather than our own Spotify app: a development-mode app
+rejects every account not on its allowlist, librespot's client doesn't. The
+bot runs the PKCE flow itself instead of `librespot --enable-oauth`, so it
+keeps the tokens: the access token signs librespot in once
+(`--access-token`, writing credentials.json) and the refresh token backs the
+dashboard's Web API features -- one login links both.
 
-Instead this uses librespot's own documented fallback for exactly this
-headless/remote situation: start `librespot --enable-oauth` on the bot's box,
-hand the friend the printed Spotify authorize URL, let them log in in their
-own browser. The final redirect (to http://127.0.0.1:<port>/login?code=...)
-fails to load in their browser since 127.0.0.1 means their own machine, not
-the bot's -- but librespot itself is running a real HTTP server on that
-loopback port, actively waiting for that exact request (confirmed by hand:
-running librespot --enable-oauth and curling 127.0.0.1:<port>/login?code=...
-gets back "Go back to your terminal :)" and completes the exchange -- it does
-NOT read the callback from stdin, despite what some docs suggest). The friend
-copies that failed url out of their address bar and pastes it back via
-/link-finish; since the bot process runs on the same box as librespot, it
-just re-issues that same GET request to 127.0.0.1 itself, which librespot's
-server receives exactly as if the friend's own browser had reached it.
-
-This means no security-group/EC2-network changes are needed at all.
-
-This stays on librespot's own client even when a public domain is set up
-(config.SPOTIFY_DIRECT_CALLBACK): logging the player in through our own
-Spotify app would let a domain redirect skip the paste-back, but a
-development-mode app rejects every account not on its allowlist.
+librespot's client only accepts a loopback redirect (127.0.0.1), so there's
+no way to send a friend's browser back to the bot. Spotify redirects them to
+127.0.0.1 on their own machine, the page fails to load, and they paste that
+url back via /link-finish (or the dashboard) for the code in it.
 """
 
 import asyncio
 import logging
 import os
-import re
+import secrets
 import time
 import urllib.parse
 from dataclasses import dataclass
 
-import aiohttp
-
 import config
+import spotify_web_api
 from librespot_manager import LibrespotManager
 from slot_store import SLOT_NAME_RE, SlotStore
 
 log = logging.getLogger("spotify_link")
 
-AUTHORIZE_URL_RE = re.compile(r"https://accounts\.spotify\.com/\S+")
-AUTHORIZE_URL_WAIT_SECONDS = 15
 CREDENTIALS_WAIT_SECONDS = 60
+# The redirect librespot's own OAuth client accepts (any loopback port).
+LIBRESPOT_REDIRECT_URI = f"http://127.0.0.1:{config.LINK_OAUTH_PORT}/login"
 CREDENTIALS_POLL_INTERVAL_SECONDS = 2
 
 
@@ -56,8 +41,9 @@ class PendingLink:
     slot_name: str
     password: str
     started_at: float
-    process: asyncio.subprocess.Process
     url: str
+    state: str
+    code_verifier: str
 
 
 class LinkManager:
@@ -91,7 +77,6 @@ class LinkManager:
         pending = self._pending.pop(user_id, None)
         if pending is None:
             return
-        await self._kill(pending.process)
         await self.store.reset(pending.slot_index)
 
     @staticmethod
@@ -156,128 +141,100 @@ class LinkManager:
             log.warning("slot %s had leftover credentials.json, removing before fresh link", spotify_slot.name)
             os.remove(credentials_path)
 
-        env = {**os.environ, "RUST_LOG": "info"}
-        try:
-            process = await asyncio.create_subprocess_exec(
-                config.LIBRESPOT_BIN,
-                "--name", spotify_slot.name,
-                "--enable-oauth",
-                "--oauth-port", str(config.LINK_OAUTH_PORT),
-                "--system-cache", spotify_slot.cache_dir,
-                "--backend", "pipe",
-                "--device", os.path.join(config.PIPE_DIR, f"slot{index}-linking.pcm"),
-                env=env,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        except Exception:
-            log.exception("failed to start librespot for linking")
-            await self.store.reset(index)
-            return "Couldn't start the Spotify login flow -- check the bot logs.", False
-
-        url = await self._read_authorize_url(process)
-        if url is None:
-            await self._kill(process)
-            await self.store.reset(index)
-            return "Couldn't start the Spotify login flow -- check the bot logs.", False
-
+        verifier, challenge = spotify_web_api.generate_pkce_pair()
+        state = secrets.token_urlsafe(16)
         self._pending[user_id] = PendingLink(
             slot_index=index,
             slot_name=slot_name,
             password=password,
             started_at=time.monotonic(),
-            process=process,
-            url=url,
+            url=spotify_web_api.build_authorize_url(
+                state,
+                challenge,
+                index,
+                spotify_web_api.SCOPES + " streaming",
+                client_id=spotify_web_api.LIBRESPOT_CLIENT_ID,
+                redirect_uri=LIBRESPOT_REDIRECT_URI,
+            ),
+            state=state,
+            code_verifier=verifier,
         )
         return (
             f"Log in with the Spotify account for **{slot_name}** using the button below. "
-            "Your browser will most likely fail to load the page it redirects to next (expected, "
-            "unless the bot happens to be running on this same machine) -- if so, copy the FULL "
-            "url from your browser's address bar and paste it back, or leave it blank if the page "
-            f"loaded fine. You have {config.LINK_TIMEOUT_SECONDS // 60} minutes.",
+            "Your browser will fail to load the page it redirects to next -- that's expected. "
+            "Copy the FULL url from your browser's address bar and paste it back. "
+            f"You have {config.LINK_TIMEOUT_SECONDS // 60} minutes.",
             True,
         )
 
-    async def _read_authorize_url(self, process: asyncio.subprocess.Process) -> str | None:
-        assert process.stdout is not None
-        try:
-            async with asyncio.timeout(AUTHORIZE_URL_WAIT_SECONDS):
-                while True:
-                    line = await process.stdout.readline()
-                    if not line:
-                        return None
-                    match = AUTHORIZE_URL_RE.search(line.decode(errors="replace"))
-                    if match:
-                        return match.group(0)
-        except TimeoutError:
-            return None
-
     async def finish_link(self, user_id: str, pasted_url: str | None = None) -> tuple[str, bool]:
-        """pasted_url is only needed when the bot and the browser doing the
-        Spotify login are on different machines (the normal remote/friend
-        case) -- the redirect to 127.0.0.1:<port> fails to load there, so the
-        bot has to replay it itself from the copied url. When the bot and
-        browser share a machine (e.g. testing locally), that redirect
-        actually reaches librespot's own server on its own; credentials.json
-        just appears with no failed page and nothing to copy, so pasted_url
-        can be omitted and this only needs to wait for that to happen."""
+        """pasted_url is the failed 127.0.0.1 redirect the browser landed on
+        after the Spotify login -- its query carries the code."""
         pending = self._pending.get(user_id)
         if pending is None:
             return "No link in progress. Run /link first.", False
 
-        process = pending.process
-        if process.returncode is not None:
-            self._pending.pop(user_id, None)
-            await self.store.reset(pending.slot_index)
-            return "That login session expired -- run /link again.", False
+        params = urllib.parse.parse_qs(urllib.parse.urlparse((pasted_url or "").strip()).query)
+        if "error" in params:
+            await self._abort(user_id)
+            return "Spotify login was cancelled -- run /link again.", False
+        code = params.get("code", [None])[0]
+        if not code:
+            return (
+                "Paste the FULL url from your browser's address bar after logging in, including "
+                "the `?code=...` part.",
+                False,
+            )
+        if params.get("state", [None])[0] != pending.state:
+            return "That url doesn't match your pending login -- make sure it's from the latest link.", False
 
-        if pasted_url:
-            query = urllib.parse.urlparse(pasted_url.strip()).query
-            if not query:
-                return (
-                    "That doesn't look like the right url -- make sure you copied the FULL address "
-                    "from your browser's address bar, including the `?code=...` part.",
-                    False,
-                )
-
-            callback_url = f"http://127.0.0.1:{config.LINK_OAUTH_PORT}/login?{query}"
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(callback_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        await resp.read()
-            except Exception:
-                log.exception("failed to replay oauth callback to librespot")
-                self._pending.pop(user_id, None)
-                await self._kill(process)
-                await self.store.reset(pending.slot_index)
-                return "Something went wrong finishing the login -- run /link again.", False
-
-        spotify_slot = self.librespot.slot_by_index(pending.slot_index)
+        # Off the pending list first so the timeout sweep can't reset the
+        # slot mid-exchange; every failure path below resets it itself.
+        self._pending.pop(user_id, None)
+        index = pending.slot_index
+        spotify_slot = self.librespot.slot_by_index(index)
         assert spotify_slot is not None
         credentials_path = os.path.join(spotify_slot.cache_dir, "credentials.json")
 
-        success = await self._wait_for_credentials(credentials_path)
-        self._pending.pop(user_id, None)
-        await self._kill(process)
-
-        if not success:
-            await self.store.reset(pending.slot_index)
-            if pasted_url:
-                return (
-                    "Login didn't complete -- the pasted url may have been wrong, expired, or "
-                    "already used. Run /link again to retry.",
-                    False,
-                )
-            return (
-                "Login hasn't completed yet -- finish logging in in your browser, then run "
-                "/link-finish again (no url needed if the bot and your browser are on the same "
-                "machine). If your browser showed a failed-to-load page instead, paste that url "
-                "into /link-finish.",
-                False,
+        try:
+            tokens = await spotify_web_api.exchange_code(
+                code,
+                pending.code_verifier,
+                index,
+                client_id=spotify_web_api.LIBRESPOT_CLIENT_ID,
+                redirect_uri=LIBRESPOT_REDIRECT_URI,
             )
+            # ponytail: the access token is visible in `ps` for the few
+            # seconds librespot runs -- it's short-lived (1h) and local-only.
+            process = await asyncio.create_subprocess_exec(
+                config.LIBRESPOT_BIN,
+                "--name", spotify_slot.name,
+                "--access-token", tokens["access_token"],
+                "--system-cache", spotify_slot.cache_dir,
+                "--backend", "pipe",
+                "--device", os.path.join(config.PIPE_DIR, f"slot{index}-linking.pcm"),
+                env={**os.environ, "RUST_LOG": "info"},
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except Exception:
+            log.exception("link failed before librespot sign-in")
+            await self.store.reset(index)
+            return "Something went wrong finishing the login -- run /link again.", False
 
-        await self.store.claim(pending.slot_index, pending.slot_name, pending.password, user_id)
+        success = await self._wait_for_credentials(credentials_path)
+        await self._kill(process)
+        if not success:
+            assert process.stdout is not None
+            output = (await process.stdout.read()).decode(errors="replace")
+            log.error("librespot didn't sign in with the OAuth token for slot %s:\n%s", spotify_slot.name, output)
+            await self.store.reset(index)
+            return "Spotify login worked, but the player couldn't sign in with it -- check the bot logs.", False
+
+        await self.store.claim(index, pending.slot_name, pending.password, user_id)
+        if tokens.get("refresh_token"):
+            await self.store.set_web_api_token(index, tokens["refresh_token"], spotify_web_api.LIBRESPOT_CLIENT_ID)
         await self.librespot.start_one(spotify_slot)
         return (
             f"Linked! Slot **{pending.slot_name}** is ready -- "

@@ -309,8 +309,9 @@ out on its own.
 
 ## Spotify Web API access
 
-`/link`/`/link-finish` only get librespot a Spotify Connect session — no
-Web API scopes. `/link-web-api <slotname>` (requires the slot already be
+`/link`/`/link-finish` log in through librespot's own Spotify client (no
+allowlist) and link both the Connect device and the Web API features in one
+go. `/link-web-api <slotname>`, only needed for slots linked before that, (requires the slot already be
 linked) runs a separate Authorization Code + PKCE flow against the bot's own
 Spotify app, same paste-the-failed-redirect UX as `/link-finish`. Requires
 `SPOTIFY_CLIENT_ID` (and, if your app is a confidential client,

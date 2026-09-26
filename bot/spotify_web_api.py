@@ -47,6 +47,12 @@ SCOPES = (
     "user-library-read user-read-recently-played playlist-read-private user-read-private"
 )
 
+# librespot's own OAuth client (what `librespot --enable-oauth` logs in
+# with). Not subject to a development-mode allowlist, so /link uses it for
+# both the player and the Web API -- see bot/spotify_link.py. Its only
+# registered redirect is loopback, hence /link's paste-back step.
+LIBRESPOT_CLIENT_ID = "65b708073fc0480ea92a077233ca87bd"
+
 PENDING_TIMEOUT_SECONDS = 600
 # Refresh a bit early so a token in active use doesn't expire mid-request.
 _EXPIRY_SAFETY_MARGIN_SECONDS = 60
@@ -65,7 +71,9 @@ def app_for_slot(slot_index: int) -> tuple[str, str | None] | None:
     return config.SPOTIFY_APPS[app] if app < len(config.SPOTIFY_APPS) else None
 
 
-def _client_fields(slot_index: int) -> dict:
+def _client_fields(slot_index: int, client_id: str | None = None) -> dict:
+    if client_id == LIBRESPOT_CLIENT_ID:
+        return {"client_id": client_id}  # public PKCE client, no secret
     app = app_for_slot(slot_index)
     if app is None:
         raise RuntimeError(f"no Spotify app configured for slot {slot_index}")
@@ -73,11 +81,18 @@ def _client_fields(slot_index: int) -> dict:
     return {"client_id": client_id, **({"client_secret": client_secret} if client_secret else {})}
 
 
-def build_authorize_url(state: str, code_challenge: str, slot_index: int, scopes: str = SCOPES) -> str:
+def build_authorize_url(
+    state: str,
+    code_challenge: str,
+    slot_index: int,
+    scopes: str = SCOPES,
+    client_id: str | None = None,
+    redirect_uri: str | None = None,
+) -> str:
     params = {
-        "client_id": _client_fields(slot_index)["client_id"],
+        "client_id": _client_fields(slot_index, client_id)["client_id"],
         "response_type": "code",
-        "redirect_uri": config.SPOTIFY_WEB_API_REDIRECT_URI,
+        "redirect_uri": redirect_uri or config.SPOTIFY_WEB_API_REDIRECT_URI,
         "state": state,
         "scope": scopes,
         "code_challenge_method": "S256",
@@ -86,13 +101,15 @@ def build_authorize_url(state: str, code_challenge: str, slot_index: int, scopes
     return f"{AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
 
 
-async def exchange_code(code: str, code_verifier: str, slot_index: int) -> dict:
+async def exchange_code(
+    code: str, code_verifier: str, slot_index: int, client_id: str | None = None, redirect_uri: str | None = None
+) -> dict:
     data = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": config.SPOTIFY_WEB_API_REDIRECT_URI,
+        "redirect_uri": redirect_uri or config.SPOTIFY_WEB_API_REDIRECT_URI,
         "code_verifier": code_verifier,
-        **_client_fields(slot_index),
+        **_client_fields(slot_index, client_id),
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(TOKEN_URL, data=data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -102,11 +119,11 @@ async def exchange_code(code: str, code_verifier: str, slot_index: int) -> dict:
             return body
 
 
-async def _refresh(refresh_token: str, slot_index: int) -> dict:
+async def _refresh(refresh_token: str, slot_index: int, client_id: str | None = None) -> dict:
     data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
-        **_client_fields(slot_index),
+        **_client_fields(slot_index, client_id),
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(TOKEN_URL, data=data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -247,7 +264,7 @@ class WebApiLinkManager:
         if meta is None or not meta.web_api_refresh_token:
             return None
 
-        token_response = await _refresh(meta.web_api_refresh_token, slot_index)
+        token_response = await _refresh(meta.web_api_refresh_token, slot_index, meta.web_api_client_id)
         self._cache[slot_index] = _CachedAccessToken(
             access_token=token_response["access_token"],
             expires_at=time.monotonic() + token_response.get("expires_in", 3600),
@@ -255,5 +272,5 @@ class WebApiLinkManager:
         # Spotify may rotate the refresh token on refresh; persist if so.
         new_refresh_token = token_response.get("refresh_token")
         if new_refresh_token and new_refresh_token != meta.web_api_refresh_token:
-            await self.store.set_web_api_token(slot_index, new_refresh_token)
+            await self.store.set_web_api_token(slot_index, new_refresh_token, meta.web_api_client_id)
         return self._cache[slot_index].access_token

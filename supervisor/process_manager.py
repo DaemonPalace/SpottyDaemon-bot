@@ -64,6 +64,12 @@ class BotProcessManager:
         asyncio.create_task(self._spawn())
 
     async def _spawn(self) -> None:
+        # A hosted install runs the bot as its own systemd unit; spawning
+        # another copy next to it means two librespots per slot fighting
+        # over the same Spotify accounts and two Discord connections.
+        if await self._healthz() is not None:
+            log.info("bot already running outside the supervisor, not spawning another")
+            return
         self._proc = await asyncio.create_subprocess_exec(
             sys.executable,
             "main.py",
@@ -104,6 +110,12 @@ class BotProcessManager:
         self._proc = None
 
     async def restart(self) -> None:
+        health = await self._healthz() if self._proc is None else None
+        if health is not None and health.get("pid"):
+            # Not ours (systemd unit): SIGTERM it and let Restart=always
+            # bring it back with the new .env.
+            os.kill(health["pid"], signal.SIGTERM)
+            return
         await self.stop()
         self._crash_looping = False
         self._recent_exits.clear()
@@ -131,25 +143,24 @@ class BotProcessManager:
         forever even though the real, systemd-managed bot is healthy."""
         if self._crash_looping:
             return STATUS_CRASH_LOOPING
-        if await self._healthz_ok():
+        health = await self._healthz()
+        if health is not None and health.get("ready"):
             return STATUS_RUNNING
         if self.is_alive():
             return STATUS_STARTING
         return STATUS_STOPPED
 
-    async def _healthz_ok(self) -> bool:
+    async def _healthz(self) -> dict | None:
+        """The bot's /healthz body, or None if nothing is answering."""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"http://{BOT_API_HOST}:{BOT_API_PORT}/healthz",
                     timeout=aiohttp.ClientTimeout(total=2),
                 ) as resp:
-                    if resp.status != 200:
-                        return False
-                    body = await resp.json()
-                    return bool(body.get("ready"))
+                    return await resp.json() if resp.status == 200 else None
         except Exception:
-            return False
+            return None
 
     def _write_pidfile(self, pid: int) -> None:
         os.makedirs(os.path.dirname(BOT_PIDFILE_PATH), exist_ok=True)

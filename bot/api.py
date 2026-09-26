@@ -26,6 +26,7 @@ import asyncio
 import hmac
 import html
 import logging
+import os
 import secrets
 import time
 from hashlib import sha256
@@ -197,6 +198,9 @@ class DiagnosticsApi:
             {
                 "ready": self.client.is_ready(),
                 "uptime_seconds": time.monotonic() - _START_MONOTONIC,
+                # Lets the supervisor restart a bot it didn't spawn (the
+                # systemd unit) instead of starting a second copy.
+                "pid": os.getpid(),
             }
         )
 

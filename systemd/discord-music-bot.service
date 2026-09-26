@@ -9,7 +9,9 @@ User=discordbot
 WorkingDirectory=/opt/discord-bot/bot
 EnvironmentFile=/opt/discord-bot/.env
 ExecStart=/opt/discord-bot/venv/bin/python main.py
-Restart=on-failure
+# always, not on-failure: the dashboard restarts the bot to apply settings
+# by SIGTERMing it (supervisor/process_manager.py restart()).
+Restart=always
 RestartSec=5
 
 [Install]

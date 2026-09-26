@@ -68,6 +68,7 @@ sudo chmod +x "$APP_DIR/bin/spottydaemon"
 sudo chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 echo "== restart services =="
+sudo cp "$APP_DIR/systemd/discord-music-bot.service" "$APP_DIR/systemd/discord-dashboard.service" /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl restart discord-music-bot discord-dashboard
 

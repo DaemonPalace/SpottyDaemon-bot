@@ -73,8 +73,13 @@ sudo systemctl daemon-reload
 sudo systemctl restart discord-music-bot discord-dashboard
 
 echo "== verify =="
-sleep 3
 ok=1
+# The bot's API only comes up after it has logged into Discord -- give it
+# up to 30s instead of failing on a normal slow start.
+for _ in $(seq 30); do
+  curl -sf http://127.0.0.1:8787/healthz >/dev/null && break
+  sleep 1
+done
 if curl -sf http://127.0.0.1:8787/healthz >/dev/null; then
   echo "-> bot healthz: OK"
 else

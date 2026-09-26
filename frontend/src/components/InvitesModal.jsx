@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { approveInvite, createInvite, denyInvite, listInvites, login } from "../api/client";
 import Modal from "./Modal";
 
@@ -24,7 +24,8 @@ function CopyButton({ text, label = "Copy" }) {
  * doesn't touch Spotify -- add the full name + email to the listed Spotify
  * app's allowlist (developer.spotify.com > User Management) first, since
  * linking fails for accounts that aren't on it. Same password-unlocks-a-
- * session pattern as AdminSettingsModal.jsx. */
+ * session pattern as AdminSettingsModal.jsx: always asks, even with a
+ * live admin cookie. */
 export default function InvitesModal({ onClose, onChanged }) {
   const [unlocked, setUnlocked] = useState(false);
   const [password, setPassword] = useState("");
@@ -33,18 +34,9 @@ export default function InvitesModal({ onClose, onChanged }) {
   const [busy, setBusy] = useState(false);
 
   async function refresh() {
-    try {
-      setInvites((await listInvites()).invites);
-      setUnlocked(true);
-    } catch (err) {
-      if (err.status !== 401) setError(err.message);
-    }
+    setInvites((await listInvites()).invites);
+    setUnlocked(true);
   }
-
-  // An admin session from earlier (settings, delete) skips the password.
-  useEffect(() => {
-    refresh();
-  }, []);
 
   async function run(action) {
     setError(null);

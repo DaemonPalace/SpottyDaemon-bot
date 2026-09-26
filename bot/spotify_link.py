@@ -24,20 +24,20 @@ server receives exactly as if the friend's own browser had reached it.
 
 This means no security-group/EC2-network changes are needed at all.
 
-Direct mode (config.SPOTIFY_DIRECT_CALLBACK, i.e. a public domain + our own
-Spotify app): the login goes through OUR app instead, whose redirect URI is
-the bot's public callback (bot/api.py's _spotify_callback), asking for
-librespot's `streaming` scope on top of the Web API ones. The callback's
-code is exchanged here, and librespot is started once with
-`--access-token` just long enough to write credentials.json. One login
-links both the Connect device and the Web API.
+This stays on librespot's own client even with a public domain set up
+(config.SPOTIFY_DIRECT_CALLBACK). A token from our own app does sign
+librespot in, but its Connect side (spirc) re-authenticates as librespot's
+built-in client id and Spotify denies it: "could not initialize spirc:
+Login request was denied: INVALID_CREDENTIALS" -- no Connect device, for
+allowlisted accounts too. librespot has no flag to change that client id,
+and its client only redirects to loopback, so the player link keeps the
+paste-back step. The Web API link (spotify_web_api.py) uses the domain.
 """
 
 import asyncio
 import logging
 import os
 import re
-import secrets
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -45,7 +45,6 @@ from dataclasses import dataclass
 import aiohttp
 
 import config
-import spotify_web_api
 from librespot_manager import LibrespotManager
 from slot_store import STATE_APPROVED, STATE_LINKING, SlotStore
 
@@ -62,10 +61,8 @@ class PendingLink:
     slot_index: int
     slot_name: str
     started_at: float
-    process: asyncio.subprocess.Process | None  # None in direct mode
+    process: asyncio.subprocess.Process
     url: str
-    state: str = ""
-    code_verifier: str = ""
 
 
 class LinkManager:
@@ -99,8 +96,7 @@ class LinkManager:
         pending = self._pending.pop(user_id, None)
         if pending is None:
             return
-        if pending.process is not None:
-            await self._kill(pending.process)
+        await self._kill(pending.process)
         await self.store.set_state(pending.slot_index, STATE_APPROVED)
 
     @staticmethod
@@ -129,11 +125,6 @@ class LinkManager:
         pending = self._pending.get(user_id)
         return pending.url if pending is not None else None
 
-    def user_for_state(self, state: str) -> str | None:
-        """Which pending direct-mode link a callback (bot/api.py's
-        _spotify_callback) belongs to -- the OAuth state is its only key."""
-        return next((u for u, p in self._pending.items() if state and p.state == state), None)
-
     async def start_link(self, user_id: str, slot_name: str) -> tuple[str, bool]:
         """Returns (message, success). Callers check the profile's password
         (or slot session token) first."""
@@ -145,8 +136,6 @@ class LinkManager:
         for other, pending in list(self._pending.items()):
             if other == user_id or pending.slot_index == index:
                 await self._abort(other)
-        if config.SPOTIFY_DIRECT_CALLBACK and spotify_web_api.app_for_slot(index) is None:
-            return "Every Spotify app's user slots are full -- ask the bot owner to add another app.", False
         slot_name = slot_meta.friendly_name
         await self.store.set_state(index, STATE_LINKING)
 
@@ -163,24 +152,6 @@ class LinkManager:
         if os.path.exists(credentials_path):
             log.warning("slot %s had leftover credentials.json, removing before fresh link", spotify_slot.name)
             os.remove(credentials_path)
-
-        if config.SPOTIFY_DIRECT_CALLBACK:
-            verifier, challenge = spotify_web_api.generate_pkce_pair()
-            state = secrets.token_urlsafe(16)
-            self._pending[user_id] = PendingLink(
-                slot_index=index,
-                slot_name=slot_name,
-                started_at=time.monotonic(),
-                process=None,
-                url=spotify_web_api.build_authorize_url(state, challenge, index, spotify_web_api.SCOPES + " streaming"),
-                state=state,
-                code_verifier=verifier,
-            )
-            return (
-                f"Log in with the Spotify account for **{slot_name}** using the button below -- it "
-                f"finishes on its own once you approve. You have {config.LINK_TIMEOUT_SECONDS // 60} minutes.",
-                True,
-            )
 
         env = {**os.environ, "RUST_LOG": "info"}
         try:
@@ -251,9 +222,6 @@ class LinkManager:
         if pending is None:
             return "No link in progress -- start linking again.", False
 
-        if pending.process is None:
-            return await self._finish_direct(user_id, pending, pasted_url)
-
         process = pending.process
         if process.returncode is not None:
             self._pending.pop(user_id, None)
@@ -306,67 +274,6 @@ class LinkManager:
             )
 
         await self.store.claim(pending.slot_index, user_id)
-        await self.librespot.start_one(spotify_slot)
-        return (
-            f"Linked! Slot **{pending.slot_name}** is ready -- "
-            f"use `/connect {pending.slot_name}` with the password you set.",
-            True,
-        )
-
-    async def _finish_direct(self, user_id: str, pending: PendingLink, callback_url: str | None) -> tuple[str, bool]:
-        """callback_url is normally the redirect bot/api.py's
-        _spotify_callback received; a pasted copy of it works the same."""
-        params = urllib.parse.parse_qs(urllib.parse.urlparse(callback_url or "").query)
-        code = params.get("code", [None])[0]
-        if "error" in params:
-            await self._abort(user_id)
-            return "Spotify login was cancelled -- start linking again.", False
-        if not code:
-            return "Waiting for you to log in -- finish in your browser and the page will confirm.", False
-        if params.get("state", [None])[0] != pending.state:
-            return "That link doesn't match your pending request.", False
-
-        # Off the pending list first so the timeout sweep can't reset the
-        # slot mid-exchange; every failure path below resets it itself.
-        self._pending.pop(user_id, None)
-        index = pending.slot_index
-        spotify_slot = self.librespot.slot_by_index(index)
-        assert spotify_slot is not None
-        credentials_path = os.path.join(spotify_slot.cache_dir, "credentials.json")
-
-        try:
-            tokens = await spotify_web_api.exchange_code(code, pending.code_verifier, index)
-            # ponytail: the access token is visible in `ps` for the few
-            # seconds librespot runs -- it's short-lived (1h) and local-only.
-            process = await asyncio.create_subprocess_exec(
-                config.LIBRESPOT_BIN,
-                "--name", spotify_slot.name,
-                "--access-token", tokens["access_token"],
-                "--system-cache", spotify_slot.cache_dir,
-                "--backend", "pipe",
-                "--device", os.path.join(config.PIPE_DIR, f"slot{index}-linking.pcm"),
-                env={**os.environ, "RUST_LOG": "info"},
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        except Exception:
-            log.exception("direct link failed before librespot sign-in")
-            await self.store.set_state(index, STATE_APPROVED)
-            return "Something went wrong finishing the login -- start linking again.", False
-
-        success = await self._wait_for_credentials(credentials_path)
-        await self._kill(process)
-        if not success:
-            assert process.stdout is not None
-            output = (await process.stdout.read()).decode(errors="replace")
-            log.error("librespot didn't sign in with the OAuth token for slot %s:\n%s", spotify_slot.name, output)
-            await self.store.set_state(index, STATE_APPROVED)
-            return "Spotify login worked, but the player couldn't sign in with it -- check the bot logs.", False
-
-        await self.store.claim(index, user_id)
-        if tokens.get("refresh_token"):
-            await self.store.set_web_api_token(index, tokens["refresh_token"])
         await self.librespot.start_one(spotify_slot)
         return (
             f"Linked! Slot **{pending.slot_name}** is ready -- "

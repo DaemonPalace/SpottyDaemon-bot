@@ -14,8 +14,8 @@ import useLinkPolling from "../hooks/useLinkPolling";
  * is just waiting for the bot's own callback instead of a paste-back.
  *
  * start/finish default to the Web API link; SlotProfile.jsx swaps in the
- * player link (/link) for a newly approved profile. onLinked gets
- * data.direct -- a direct-mode player link covers the Web API too. */
+ * player link (/link) for a newly approved profile, which never gets
+ * data.direct -- it always pastes back (see bot/spotify_link.py). */
 export default function WebApiLinkFlow({
   name,
   prompt,
@@ -33,7 +33,7 @@ export default function WebApiLinkFlow({
 
   useLinkPolling(step === "finish" && direct, () => finish(name, userId, ""), (data) => {
     if (data.success) {
-      onLinked(true);
+      onLinked();
     } else {
       setError(data.message);
       setStep("start");
@@ -64,7 +64,7 @@ export default function WebApiLinkFlow({
     try {
       const data = await finish(name, userId, pastedUrl.trim());
       if (!data.success) throw new Error(data.message);
-      onLinked(false);
+      onLinked();
     } catch (err) {
       setError(err.message);
     }

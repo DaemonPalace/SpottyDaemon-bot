@@ -302,7 +302,6 @@ class DiagnosticsApi:
                 "success": success,
                 "user_id": user_id,
                 "authorize_url": authorize_url,
-                "direct": SPOTIFY_DIRECT_CALLBACK,
             }
         )
 
@@ -383,12 +382,10 @@ class DiagnosticsApi:
         pasted_url = body.get("pasted_url")
         if not user_id:
             raise web.HTTPBadRequest(text="user_id is required")
-        if SPOTIFY_DIRECT_CALLBACK and not pasted_url:
-            return self._poll_callback(self.link_manager, user_id)
         content, success = await self.link_manager.finish_link(user_id, pasted_url)
         return web.json_response({"message": content, "success": success})
 
-    def _poll_callback(self, manager: LinkManager | WebApiLinkManager, user_id: str) -> web.Response:
+    def _poll_callback(self, manager: WebApiLinkManager, user_id: str) -> web.Response:
         """Direct mode's finish: the callback does the real work, the
         dashboard just polls here until it has."""
         if user_id in self._callback_results:
@@ -403,14 +400,11 @@ class DiagnosticsApi:
     async def _spotify_callback(self, request: web.Request) -> web.Response:
         """Public OAuth redirect target for direct mode (config.
         SPOTIFY_DIRECT_CALLBACK) -- Spotify sends the browser here, via the
-        supervisor's /api proxy, after either /link or /link-web-api. The
-        OAuth state says which pending link it finishes."""
-        state = request.query.get("state", "")
-        user_id = self.link_manager.user_for_state(state)
-        manager = self.link_manager
-        if user_id is None:
-            user_id = self.web_api_link_manager.user_for_state(state)
-            manager = self.web_api_link_manager
+        supervisor's /api proxy, after /link-web-api (the player link can't
+        use it, see spotify_link.py). The OAuth state says which pending
+        link it finishes."""
+        manager = self.web_api_link_manager
+        user_id = manager.user_for_state(request.query.get("state", ""))
         if user_id is None:
             return self._callback_page("That login link expired or was already used -- start linking again.", False)
 

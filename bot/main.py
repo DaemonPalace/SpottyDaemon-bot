@@ -109,15 +109,18 @@ class LinkStartView(discord.ui.View):
     swapped for a disabled hint instead; the plain fallback_command still
     works either way (interaction_relay.py handles it directly).
 
-    In direct mode (SPOTIFY_DIRECT_CALLBACK) there's nothing to paste --
-    Spotify redirects to the bot's own callback -- so just the login button."""
+    direct=True (the Web API link with SPOTIFY_DIRECT_CALLBACK) has nothing
+    to paste -- Spotify redirects to the bot's own callback -- so just the
+    login button. The player link always pastes back, see spotify_link.py."""
 
-    def __init__(self, authorize_url: str, modal_title: str, on_finish_callback, fallback_command: str):
+    def __init__(
+        self, authorize_url: str, modal_title: str, on_finish_callback, fallback_command: str, direct: bool = False
+    ):
         super().__init__(timeout=900)
         self.add_item(
             discord.ui.Button(label="Log in with Spotify", style=discord.ButtonStyle.link, url=authorize_url)
         )
-        if SPOTIFY_DIRECT_CALLBACK:
+        if direct:
             return
         if INTERACTIONS_QUEUE_URL:
             self.add_item(
@@ -309,7 +312,11 @@ async def link_web_api(interaction: discord.Interaction, slotname: str):
             await modal_interaction.followup.send(content2, ephemeral=ephemeral2)
 
         view = LinkStartView(
-            authorize_url, f"Finish Web API link for '{slotname}'", handle_finish, "/link-web-api-finish"
+            authorize_url,
+            f"Finish Web API link for '{slotname}'",
+            handle_finish,
+            "/link-web-api-finish",
+            direct=SPOTIFY_DIRECT_CALLBACK,
         )
         await interaction.response.send_message(content, view=view, ephemeral=ephemeral)
     else:

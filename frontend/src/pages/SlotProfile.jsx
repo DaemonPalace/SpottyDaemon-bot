@@ -136,7 +136,7 @@ export default function SlotProfile() {
           prompt="You're approved! Link your Spotify account to finish setting up this profile."
           start={startLink}
           finish={(_name, userId, url) => finishLink(userId, url || null)}
-          onLinked={(direct) => setUnlocked({ ...unlocked, state: "claimed", web_api_linked: direct })}
+          onLinked={() => setUnlocked({ ...unlocked, state: "claimed", web_api_linked: false })}
         />
         <button type="button" className="ghost" onClick={handleLogout}>
           Log out

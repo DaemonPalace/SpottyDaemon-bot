@@ -268,7 +268,7 @@ allowlisted accounts in:
 1. In the dashboard, the ✉ button next to admin settings opens **Invites** (admin password). **Create invite link** reserves a slot and gives a one-time `/invite/<token>` link to send to one person.
 2. They open it, pick a profile name + password, and enter the full name and email of their Spotify account. The profile is now waiting for approval (the ✉ button shows a count).
 3. Add that name + email to the Spotify app the Invites screen names (developer.spotify.com → the app → User Management), then **Approve** — or **Deny**, which frees the slot.
-4. Next time they log in to their profile, they're asked to link Spotify (Discord's `/link <profile>` + password does the same). With `PUBLIC_DASHBOARD_URL` set, Spotify redirects back to the bot's callback and one login links both the player and the Web API. Without a domain it falls back to pasting the failed `127.0.0.1` url back (and a second, Web API link from the dashboard).
+4. Next time they log in to their profile, they're asked to link Spotify (Discord's `/link <profile>` + password does the same). The player login goes through librespot's own client, so they paste the failed `127.0.0.1` url back (a token from your own app signs librespot in but Spotify denies its Connect device: `INVALID_CREDENTIALS`). Then the dashboard asks for a second, Web API login; with `PUBLIC_DASHBOARD_URL` set that one redirects back to the bot's callback on its own.
 5. Once linked, anyone can `/connect <profile>` with its password.
 
 The no-domain fallback works without exposing any port on the server: librespot's own

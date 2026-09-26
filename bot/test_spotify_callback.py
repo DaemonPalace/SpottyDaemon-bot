@@ -1,4 +1,4 @@
-"""Self-check for direct-mode Spotify linking (bot/api.py's
+"""Self-check for direct-mode Web API linking (bot/api.py's
 _spotify_callback + finish-link polling). Run from the repo root:
 `DISCORD_TOKEN=x python bot/test_spotify_callback.py` (no Discord or Spotify
 needed -- the token exchange and stores are stubbed)."""

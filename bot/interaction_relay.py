@@ -85,10 +85,11 @@ def _link_start_components(authorize_url: str, paste_flow: str) -> list[dict]:
     interaction generated -- safe to send with no live Interaction behind
     it) plus a "Paste redirect URL" button whose click Lambda answers with
     a MODAL directly (custom_id "paste-finish:<paste_flow>" once
-    submitted, see this module's docstring). Direct mode drops the paste
-    button -- Spotify redirects to the bot's own callback instead."""
+    submitted, see this module's docstring). A direct-mode Web API link
+    drops the paste button -- Spotify redirects to the bot's own callback
+    instead. The player link ("link") always pastes, see spotify_link.py."""
     buttons = [{"type": 2, "style": 5, "label": "Log in with Spotify", "url": authorize_url}]
-    if not SPOTIFY_DIRECT_CALLBACK:
+    if not (SPOTIFY_DIRECT_CALLBACK and paste_flow == "link-web-api"):
         buttons.append({"type": 2, "style": 1, "label": "Paste redirect URL", "custom_id": f"paste:{paste_flow}"})
     return [{"type": 1, "components": buttons}]
 

@@ -58,9 +58,24 @@ def generate_pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-def build_authorize_url(state: str, code_challenge: str, scopes: str = SCOPES) -> str:
+def app_for_slot(slot_index: int) -> tuple[str, str | None] | None:
+    """(client_id, client_secret) of the Spotify app serving this slot, or
+    None if there aren't enough apps configured to reach it."""
+    app = (slot_index - 1) // config.SPOTIFY_USERS_PER_APP
+    return config.SPOTIFY_APPS[app] if app < len(config.SPOTIFY_APPS) else None
+
+
+def _client_fields(slot_index: int) -> dict:
+    app = app_for_slot(slot_index)
+    if app is None:
+        raise RuntimeError(f"no Spotify app configured for slot {slot_index}")
+    client_id, client_secret = app
+    return {"client_id": client_id, **({"client_secret": client_secret} if client_secret else {})}
+
+
+def build_authorize_url(state: str, code_challenge: str, slot_index: int, scopes: str = SCOPES) -> str:
     params = {
-        "client_id": config.SPOTIFY_CLIENT_ID,
+        "client_id": _client_fields(slot_index)["client_id"],
         "response_type": "code",
         "redirect_uri": config.SPOTIFY_WEB_API_REDIRECT_URI,
         "state": state,
@@ -71,16 +86,14 @@ def build_authorize_url(state: str, code_challenge: str, scopes: str = SCOPES) -
     return f"{AUTHORIZE_URL}?{urllib.parse.urlencode(params)}"
 
 
-async def exchange_code(code: str, code_verifier: str) -> dict:
+async def exchange_code(code: str, code_verifier: str, slot_index: int) -> dict:
     data = {
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": config.SPOTIFY_WEB_API_REDIRECT_URI,
-        "client_id": config.SPOTIFY_CLIENT_ID,
         "code_verifier": code_verifier,
+        **_client_fields(slot_index),
     }
-    if config.SPOTIFY_CLIENT_SECRET:
-        data["client_secret"] = config.SPOTIFY_CLIENT_SECRET
     async with aiohttp.ClientSession() as session:
         async with session.post(TOKEN_URL, data=data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             body = await resp.json()
@@ -89,14 +102,12 @@ async def exchange_code(code: str, code_verifier: str) -> dict:
             return body
 
 
-async def _refresh(refresh_token: str) -> dict:
+async def _refresh(refresh_token: str, slot_index: int) -> dict:
     data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
-        "client_id": config.SPOTIFY_CLIENT_ID,
+        **_client_fields(slot_index),
     }
-    if config.SPOTIFY_CLIENT_SECRET:
-        data["client_secret"] = config.SPOTIFY_CLIENT_SECRET
     async with aiohttp.ClientSession() as session:
         async with session.post(TOKEN_URL, data=data, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             body = await resp.json()
@@ -157,9 +168,15 @@ class WebApiLinkManager:
                 "Ask the bot owner to register an app at developer.spotify.com.",
                 False,
             )
+        if app_for_slot(slot_index) is None:
+            return (
+                "No Spotify app is configured for this slot -- ask the bot owner to add another "
+                "app's client id to SPOTIFY_CLIENT_ID.",
+                False,
+            )
         verifier, challenge = generate_pkce_pair()
         state = secrets.token_urlsafe(16)
-        url = build_authorize_url(state, challenge)
+        url = build_authorize_url(state, challenge, slot_index)
         self._pending[user_id] = _PendingWebApiLink(
             slot_index=slot_index, code_verifier=verifier, state=state, started_at=time.monotonic(), url=url
         )
@@ -201,7 +218,7 @@ class WebApiLinkManager:
             return "That link doesn't match your pending request -- run /link-web-api again.", False
 
         try:
-            token_response = await exchange_code(code, pending.code_verifier)
+            token_response = await exchange_code(code, pending.code_verifier, pending.slot_index)
         except Exception:
             log.exception("web api token exchange failed")
             self._pending.pop(user_id, None)
@@ -230,7 +247,7 @@ class WebApiLinkManager:
         if meta is None or not meta.web_api_refresh_token:
             return None
 
-        token_response = await _refresh(meta.web_api_refresh_token)
+        token_response = await _refresh(meta.web_api_refresh_token, slot_index)
         self._cache[slot_index] = _CachedAccessToken(
             access_token=token_response["access_token"],
             expires_at=time.monotonic() + token_response.get("expires_in", 3600),

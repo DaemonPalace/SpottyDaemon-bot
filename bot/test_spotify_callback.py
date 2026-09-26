@@ -23,9 +23,10 @@ from slot_store import SlotMetadata, hash_password  # noqa: E402
 api.API_TOKEN = None
 api.SPOTIFY_DIRECT_CALLBACK = config.SPOTIFY_DIRECT_CALLBACK = True
 config.SPOTIFY_CLIENT_ID = "client"
+config.SPOTIFY_APPS = [("client", None)]
 
 
-async def fake_exchange(code, verifier):
+async def fake_exchange(code, verifier, slot_index):
     assert code == "good-code"
     return {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
 

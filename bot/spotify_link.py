@@ -153,6 +153,8 @@ class LinkManager:
             return "All slots are in use -- ask the bot owner to free one up with /delete-slot.", False
 
         index = slot_meta.index
+        if config.SPOTIFY_DIRECT_CALLBACK and spotify_web_api.app_for_slot(index) is None:
+            return "Every Spotify app's user slots are full -- ask the bot owner to add another app.", False
         await self.store.set_linking(index)
 
         spotify_slot = self.librespot.slot_by_index(index)
@@ -178,7 +180,7 @@ class LinkManager:
                 password=password,
                 started_at=time.monotonic(),
                 process=None,
-                url=spotify_web_api.build_authorize_url(state, challenge, spotify_web_api.SCOPES + " streaming"),
+                url=spotify_web_api.build_authorize_url(state, challenge, index, spotify_web_api.SCOPES + " streaming"),
                 state=state,
                 code_verifier=verifier,
             )
@@ -342,7 +344,7 @@ class LinkManager:
         credentials_path = os.path.join(spotify_slot.cache_dir, "credentials.json")
 
         try:
-            tokens = await spotify_web_api.exchange_code(code, pending.code_verifier)
+            tokens = await spotify_web_api.exchange_code(code, pending.code_verifier, index)
             # ponytail: the access token is visible in `ps` for the few
             # seconds librespot runs -- it's short-lived (1h) and local-only.
             process = await asyncio.create_subprocess_exec(

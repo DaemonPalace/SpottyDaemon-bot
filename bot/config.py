@@ -83,6 +83,21 @@ SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 # Optional -- only needed if the app is registered as a confidential client;
 # a PKCE public client doesn't require one.
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
+# Development-mode Spotify apps only allow a few allowlisted users each, so
+# both of the above may be comma-separated lists of several apps (secrets
+# positionally matched, blank for a public client: "secret1,,secret3").
+# Slot N uses app (N-1) // SPOTIFY_USERS_PER_APP, so slots 1-5 stay on the
+# first app. Every app needs SPOTIFY_WEB_API_REDIRECT_URI registered on it,
+# and MAX_SLOTS raised to cover the extra slots.
+SPOTIFY_USERS_PER_APP = int(os.environ.get("SPOTIFY_USERS_PER_APP", "5"))
+SPOTIFY_APPS = [
+    (client_id.strip(), secret.strip() or None)
+    for client_id, secret in zip(
+        (SPOTIFY_CLIENT_ID or "").split(","),
+        (SPOTIFY_CLIENT_SECRET or "").split(",") + [""] * (SPOTIFY_CLIENT_ID or "").count(","),
+    )
+    if client_id.strip()
+]
 SPOTIFY_WEB_API_REDIRECT_URI = os.environ.get("SPOTIFY_WEB_API_REDIRECT_URI") or (
     # Spotify only allows plain HTTP on loopback, so an http:// LAN dashboard
     # can't be the callback -- keep the paste-back default for it.

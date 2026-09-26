@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { changeAdminPassword, getAdminSettings, login, updateAdminSettings } from "../api/client";
 import Modal from "./Modal";
 
-const SECRET_KEYS = new Set(["DISCORD_TOKEN", "SPOTIFY_CLIENT_SECRET"]);
+const SECRET_KEYS = new Set(["DISCORD_TOKEN"]);
 
 /** Admin-only settings: bot token, Spotify Web API credentials, a few
  * self-host knobs, and the admin password -- everything else in
@@ -111,6 +111,13 @@ export default function AdminSettingsModal({ onClose }) {
     );
   }
 
+  // Several Spotify apps, since a development-mode app only serves ~5
+  // allowlisted users. Slot N uses app (N-1)/5 -- see bot/config.py's
+  // SPOTIFY_APPS. A blank secret keeps the one saved for that client id.
+  const apps = edits.SPOTIFY_APPS ?? fields.SPOTIFY_APPS.value.map((a) => ({ ...a, secret: "" }));
+  const setApps = (next) => setEdits({ ...edits, SPOTIFY_APPS: next });
+  const setApp = (i, patch) => setApps(apps.map((a, j) => (j === i ? { ...a, ...patch } : a)));
+
   return (
     <Modal title="Admin settings" onClose={onClose} wide>
       <form onSubmit={handleSave} className="form">
@@ -122,8 +129,36 @@ export default function AdminSettingsModal({ onClose }) {
           Now-playing, queue, search, playlists, library. Register an app at developer.spotify.com and add the Redirect
           URI below to it.
         </p>
-        {field("SPOTIFY_CLIENT_ID", "Client ID")}
-        {field("SPOTIFY_CLIENT_SECRET", "Client secret")}
+        <p className="hint">
+          Each app only lets the 5 users on its User Management list in, so add one app per 5 slots and raise Max slots
+          to match. Slots are tied to an app by position -- removing or reordering apps means those users relink.
+        </p>
+        {apps.map((app, i) => (
+          <fieldset key={i} className="form" style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "0.75rem" }}>
+            <legend className="hint">
+              App {i + 1} -- slots {i * 5 + 1}-{i * 5 + 5}
+            </legend>
+            <label>
+              Client ID
+              <input value={app.clientId} onChange={(e) => setApp(i, { clientId: e.target.value })} />
+            </label>
+            <label>
+              Client secret
+              <input
+                type="password"
+                placeholder={app.secretSet ? "Currently set -- leave blank to keep it" : "Optional"}
+                value={app.secret}
+                onChange={(e) => setApp(i, { secret: e.target.value })}
+              />
+            </label>
+            <button type="button" className="ghost" onClick={() => setApps(apps.filter((_, j) => j !== i))}>
+              Remove app
+            </button>
+          </fieldset>
+        ))}
+        <button type="button" className="ghost" onClick={() => setApps([...apps, { clientId: "", secret: "" }])}>
+          Add Spotify app
+        </button>
         {field("SPOTIFY_WEB_API_REDIRECT_URI", "Redirect URI")}
 
         <h3>Public dashboard</h3>

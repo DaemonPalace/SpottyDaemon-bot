@@ -111,7 +111,34 @@ async def _get_settings(request: web.Request) -> web.Response:
         key: {"value": "" if secret else current.get(key, ""), "isSet": bool(current.get(key))}
         for key, secret in SETTINGS_FIELDS
     }
+    fields["SPOTIFY_APPS"] = {"value": [{"clientId": cid, "secretSet": bool(sec)} for cid, sec in _spotify_apps(current)]}
     return web.json_response(fields)
+
+
+def _spotify_apps(env: dict[str, str]) -> list[tuple[str, str]]:
+    """SPOTIFY_CLIENT_ID/SECRET as the (id, secret) pairs bot/config.py's
+    SPOTIFY_APPS reads them back as -- comma-separated, secrets positional."""
+    ids = env.get("SPOTIFY_CLIENT_ID", "").split(",")
+    secret_list = env.get("SPOTIFY_CLIENT_SECRET", "").split(",")
+    return [(cid.strip(), (secret_list[i] if i < len(secret_list) else "").strip()) for i, cid in enumerate(ids) if cid.strip()]
+
+
+def _spotify_app_values(apps: list[dict], env: dict[str, str]) -> dict[str, str]:
+    """The settings screen's app list, back to .env values. A blank secret
+    keeps whatever secret that client id already had, so masked secrets
+    round-trip without ever being sent to the browser."""
+    old = dict(_spotify_apps(env))
+    pairs = [
+        (cid, str(app.get("secret") or "").strip() or old.get(cid, ""))
+        for app in apps
+        if (cid := str(app.get("clientId") or "").strip())
+    ]
+    if any("," in cid + sec for cid, sec in pairs):
+        raise web.HTTPBadRequest(text="client ids and secrets can't contain commas")
+    return {
+        "SPOTIFY_CLIENT_ID": ",".join(cid for cid, _ in pairs),
+        "SPOTIFY_CLIENT_SECRET": ",".join(sec for _, sec in pairs),
+    }
 
 
 async def _update_settings(request: web.Request) -> web.Response:
@@ -121,6 +148,8 @@ async def _update_settings(request: web.Request) -> web.Response:
     # without ever having its real value sent back to the browser) --
     # never used to clear a value.
     values = {k: str(v) for k, v in body.items() if k in allowed and str(v).strip() != ""}
+    if isinstance(body.get("SPOTIFY_APPS"), list):
+        values.update(_spotify_app_values(body["SPOTIFY_APPS"], env_file.read_env()))
     if not values:
         return web.json_response({"updated": [], "restarted": False})
 

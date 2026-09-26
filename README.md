@@ -319,6 +319,12 @@ developer.spotify.com and add `SPOTIFY_WEB_API_REDIRECT_URI` (default
 `http://127.0.0.1:5589/callback`) as a redirect URI there. See
 `bot/spotify_web_api.py`.
 
+A development-mode app only serves users on its User Management allowlist,
+so for more users register several apps and comma-separate them:
+`SPOTIFY_CLIENT_ID=id1,id2` (secrets in the same order). Slots 1–5 use the
+first app, 6–10 the second (`SPOTIFY_USERS_PER_APP`, default 5); raise
+`MAX_SLOTS` to match and add each slot's user to its own app's allowlist.
+
 ## Diagnostics API
 
 `bot/api.py` serves a small read-only REST API, on by default at

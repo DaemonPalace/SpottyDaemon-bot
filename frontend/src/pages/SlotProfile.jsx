@@ -220,18 +220,20 @@ export default function SlotProfile() {
   return (
     <div className="dashboard">
       <header className="dashboard-header">
-        <SearchBar onQueryChange={onQueryChange} />
         {jamToken ? (
           <div className="settings-btn">
             <ProfileCircle name={name} avatarUrl={unlocked.avatar_url} size="sm" />
             <span>Jamming on {unlocked.display_name || name}</span>
           </div>
         ) : (
-          <>
-            <button className="ghost settings-btn" onClick={() => setShowSettings(true)}>
-              <ProfileCircle name={name} avatarUrl={unlocked.avatar_url} size="sm" />
-              <span>{name}</span>
-            </button>
+          <button className="ghost settings-btn" onClick={() => setShowSettings(true)}>
+            <ProfileCircle name={name} avatarUrl={unlocked.avatar_url} size="sm" />
+            <span>{name}</span>
+          </button>
+        )}
+        <SearchBar onQueryChange={onQueryChange} />
+        {!jamToken && (
+          <div className="dashboard-actions">
             <button
               type="button"
               className="ghost icon-btn"
@@ -244,7 +246,7 @@ export default function SlotProfile() {
             <button type="button" className="ghost" onClick={handleLogout}>
               Log out
             </button>
-          </>
+          </div>
         )}
       </header>
 

@@ -137,7 +137,12 @@ class DiagnosticsApi:
         try:
             return await handler(request)
         except spotify_player_api.SpotifyApiError as err:
-            if err.status == 429:
+            if err.status == 429 and "QUOTA_EXCEEDED" in err.body:
+                # Development-mode daily quota (since Jul 2026), per endpoint
+                # group and shared by every app on the developer account.
+                # Other endpoints still work, so no slot-wide cooldown.
+                message = "Spotify's daily limit for this is used up -- it resets within a day."
+            elif err.status == 429:
                 wait = min(err.retry_after or 60, 3600)
                 meta = self.slot_store.get_by_name(request.match_info.get("name", ""))
                 if meta is not None:

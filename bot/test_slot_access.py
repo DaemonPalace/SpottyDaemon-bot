@@ -95,6 +95,26 @@ async def main():
         assert await status("POST", "/api/invites/1/approve") == 401
         assert await status("GET", "/api/invite/sometoken") == 200
 
+    # A daily-quota 429 answers that request only -- no slot-wide cooldown.
+    blocked = []
+    diag.web_api_link_manager = type("W", (), {"block": lambda self, i, s: blocked.append(i)})()
+
+    async def quota(request):
+        raise api.spotify_player_api.SpotifyApiError("x", 429, '{"reason":"QUOTA_EXCEEDED"}', 50000)
+
+    async def limited(request):
+        raise api.spotify_player_api.SpotifyApiError("x", 429, "", 30)
+
+    diag._playlists, diag._recently_played = quota, limited
+    async with TestClient(TestServer(diag._build_app())) as client:
+        headers = {"X-Admin": "1"}
+        async with client.get("/api/slots/alice/playlists", headers=headers) as resp:
+            assert resp.status == 429 and "daily limit" in (await resp.json())["message"]
+        assert blocked == []
+        async with client.get("/api/slots/alice/recently-played", headers=headers) as resp:
+            assert resp.status == 429
+        assert blocked == [1]
+
     print("slot access checks passed")
 
 

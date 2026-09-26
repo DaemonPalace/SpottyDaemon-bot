@@ -20,6 +20,7 @@ class SpotifyApiError(RuntimeError):
     def __init__(self, what: str, status: int, body: str, retry_after: int | None = None):
         super().__init__(f"{what} failed ({status}): {body}")
         self.status = status
+        self.body = body
         self.retry_after = retry_after
 
 

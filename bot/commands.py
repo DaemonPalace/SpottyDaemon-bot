@@ -77,6 +77,9 @@ def _lookup_verified_slot(
         return None, (f"No slot named '{slot_name}'. Ask your friend to /link one first.", True)
     if not store.verify_password(slot_name, password):
         return None, ("Wrong password for that slot.", True)
+    if slot_meta.state != STATE_CLAIMED:
+        # Invites set the password at sign-up, before Spotify is linked.
+        return None, ("That profile isn't linked to Spotify yet -- finish linking in the dashboard first.", True)
     spotify_slot = librespot.slot_by_index(slot_meta.index)
     assert spotify_slot is not None
     return spotify_slot, None

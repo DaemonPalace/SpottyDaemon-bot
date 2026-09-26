@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   addToQueue,
+  finishLink,
+  startLink,
   moveUpNext,
   removeUpNext,
   getAlbum,
@@ -121,6 +123,22 @@ export default function SlotProfile() {
         onClose={() => navigate("/slots")}
         onUnlocked={setUnlocked}
       />
+    );
+  }
+
+  // Approved from an invite but not linked yet: the player link comes first.
+  if (!jamToken && unlocked.state !== "claimed") {
+    return (
+      <div className="screen">
+        <h1>Welcome, {name}</h1>
+        <WebApiLinkFlow
+          name={name}
+          prompt="You're approved! Link your Spotify account to finish setting up this profile."
+          start={startLink}
+          finish={(_name, userId, url) => finishLink(userId, url || null)}
+          onLinked={(direct) => setUnlocked({ ...unlocked, state: "claimed", web_api_linked: direct })}
+        />
+      </div>
     );
   }
 

@@ -11,8 +11,18 @@ import useLinkPolling from "../hooks/useLinkPolling";
  * popup blockers don't eat it once the url arrives after the await) and
  * reveals the paste-back dialog for step two, instead of asking for two
  * separate clicks. With a public domain configured (data.direct), step two
- * is just waiting for the bot's own callback instead of a paste-back. */
-export default function WebApiLinkFlow({ name, prompt, onLinked }) {
+ * is just waiting for the bot's own callback instead of a paste-back.
+ *
+ * start/finish default to the Web API link; SlotProfile.jsx swaps in the
+ * player link (/link) for a newly approved profile. onLinked gets
+ * data.direct -- a direct-mode player link covers the Web API too. */
+export default function WebApiLinkFlow({
+  name,
+  prompt,
+  onLinked,
+  start = startWebApiLink,
+  finish = finishWebApiLink,
+}) {
   const [step, setStep] = useState("start");
   const [message, setMessage] = useState("");
   const [authorizeUrl, setAuthorizeUrl] = useState(null);
@@ -21,9 +31,9 @@ export default function WebApiLinkFlow({ name, prompt, onLinked }) {
   const [direct, setDirect] = useState(false);
   const [error, setError] = useState(null);
 
-  useLinkPolling(step === "finish" && direct, () => finishWebApiLink(name, userId, ""), (data) => {
+  useLinkPolling(step === "finish" && direct, () => finish(name, userId, ""), (data) => {
     if (data.success) {
-      onLinked();
+      onLinked(true);
     } else {
       setError(data.message);
       setStep("start");
@@ -34,7 +44,7 @@ export default function WebApiLinkFlow({ name, prompt, onLinked }) {
     setError(null);
     const newTab = window.open("", "_blank");
     try {
-      const data = await startWebApiLink(name);
+      const data = await start(name);
       if (!data.success) throw new Error(data.message);
       if (newTab) newTab.location = data.authorize_url;
       setMessage(data.message);
@@ -52,9 +62,9 @@ export default function WebApiLinkFlow({ name, prompt, onLinked }) {
     e.preventDefault();
     setError(null);
     try {
-      const data = await finishWebApiLink(name, userId, pastedUrl.trim());
+      const data = await finish(name, userId, pastedUrl.trim());
       if (!data.success) throw new Error(data.message);
-      onLinked();
+      onLinked(false);
     } catch (err) {
       setError(err.message);
     }

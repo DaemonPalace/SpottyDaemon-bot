@@ -520,6 +520,40 @@ button:disabled {
   position: absolute;
   top: 1.25rem;
   right: 1.25rem;
+  display: flex;
+  gap: 0.25rem;
+}
+
+.invites-btn {
+  position: relative;
+}
+
+.invites-btn .profile-circle-badge {
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  font-size: 0.7rem;
+}
+
+.invite-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.invite-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.invite-url {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
 }
 
 .profile-select-title {

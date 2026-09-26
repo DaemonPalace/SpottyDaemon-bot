@@ -38,9 +38,9 @@ from commands import active_sessions_snapshot, do_delete_slot
 from config import API_HOST, API_PORT, API_TOKEN, MAX_SLOTS, SPOTIFY_DIRECT_CALLBACK
 from jam import JamManager
 from librespot_manager import LibrespotManager
-from slot_store import STATE_CLAIMED, SlotStore
+from slot_store import STATE_APPROVED, STATE_CLAIMED, STATE_INVITED, STATE_PENDING, SlotStore
 from spotify_link import LinkManager
-from spotify_web_api import WebApiLinkManager
+from spotify_web_api import WebApiLinkManager, app_for_slot
 from up_next import UpNextManager
 
 log = logging.getLogger("api")
@@ -120,7 +120,8 @@ class DiagnosticsApi:
         is_admin = request.headers.get("X-Admin") == "1"
         name = request.match_info.get("name")
         canonical = request.match_info.route.resource.canonical if request.match_info.route.resource else ""
-        if request.path == "/api/sessions" and not is_admin:
+        admin_only = request.path in ("/api/sessions", "/api/invites") or request.path.startswith("/api/invites/")
+        if admin_only and not is_admin:
             raise web.HTTPUnauthorized(text="admin only")
         if name is not None and canonical != "/api/slots/{name}/select" and not is_admin:
             route = canonical.removeprefix("/api/slots/{name}/").split("/")[0]
@@ -167,7 +168,13 @@ class DiagnosticsApi:
         app.router.add_get("/api/slots", self._slots)
         app.router.add_get("/api/slots/{name}/audio", self._slot_audio)
         app.router.add_get("/api/sessions", self._sessions)
-        app.router.add_post("/api/slots/link/start", self._link_start)
+        app.router.add_get("/api/invites", self._invites)
+        app.router.add_post("/api/invites", self._invite_create)
+        app.router.add_post("/api/invites/{index}/approve", self._invite_approve)
+        app.router.add_post("/api/invites/{index}/deny", self._invite_deny)
+        app.router.add_get("/api/invite/{token}", self._invite_check)
+        app.router.add_post("/api/invite/{token}", self._invite_register)
+        app.router.add_post("/api/slots/{name}/link/start", self._link_start)
         app.router.add_post("/api/slots/link/finish", self._link_finish)
         app.router.add_post("/api/slots/{name}/select", self._slot_select)
         app.router.add_get("/api/jam/{token}", self._jam_slot)
@@ -277,17 +284,13 @@ class DiagnosticsApi:
         return web.json_response({"sessions": active_sessions_snapshot()})
 
     async def _link_start(self, request: web.Request) -> web.Response:
-        """Web-originated equivalent of /link. There's no Discord user here,
-        so the supervisor mints a synthetic user_id per link attempt --
-        LinkManager only uses it as an opaque key to track one pending link
-        at a time, same as a real Discord user id would be."""
-        body = await request.json()
-        slot_name = body.get("slot_name", "")
-        password = body.get("password", "")
-        if not slot_name or not password:
-            raise web.HTTPBadRequest(text="slot_name and password are required")
+        """Web-originated equivalent of /link, for an approved profile the
+        caller already unlocked (slot session token, checked by
+        _slot_access_middleware). There's no Discord user here, so a
+        synthetic user_id per attempt -- LinkManager only uses it as an
+        opaque key to track the pending link."""
         user_id = "web:" + secrets.token_hex(8)
-        content, success = await self.link_manager.start_link(user_id, slot_name, password)
+        content, success = await self.link_manager.start_link(user_id, request.match_info["name"])
         authorize_url = self.link_manager.authorize_url(user_id)
         return web.json_response(
             {
@@ -295,8 +298,80 @@ class DiagnosticsApi:
                 "success": success,
                 "user_id": user_id,
                 "authorize_url": authorize_url,
+                "direct": SPOTIFY_DIRECT_CALLBACK,
             }
         )
+
+    # --- Invites: admin hands out a link, invitee signs up, admin
+    # allowlists their Spotify email in the app and approves (slot_store.py)
+
+    def _invite_entry(self, index: int) -> dict:
+        meta = self.slot_store.get_by_index(index)
+        app = app_for_slot(index)
+        return {
+            "index": meta.index,
+            "state": meta.state,
+            "token": meta.invite_token,
+            "name": meta.friendly_name,
+            "full_name": meta.full_name,
+            "email": meta.spotify_email,
+            "spotify_app": app[0] if app else None,
+        }
+
+    async def _invites(self, request: web.Request) -> web.Response:
+        states = (STATE_INVITED, STATE_PENDING)
+        indexes = [i for i in range(1, MAX_SLOTS + 1) if self.slot_store.get_by_index(i).state in states]
+        return web.json_response({"invites": [self._invite_entry(i) for i in indexes]})
+
+    async def _invite_create(self, request: web.Request) -> web.Response:
+        meta = await self.slot_store.create_invite()
+        if meta is None:
+            raise web.HTTPConflict(text="All profile slots are in use -- raise MAX_SLOTS or delete a profile.")
+        if app_for_slot(meta.index) is None:
+            await self.slot_store.reset(meta.index)
+            raise web.HTTPConflict(text="No Spotify app has room for another user -- add one in admin settings.")
+        return web.json_response(self._invite_entry(meta.index))
+
+    def _invite_meta(self, request: web.Request, state: str | None = None):
+        try:
+            meta = self.slot_store.get_by_index(int(request.match_info["index"]))
+        except ValueError:
+            meta = None
+        if meta is None or meta.state not in ((state,) if state else (STATE_INVITED, STATE_PENDING)):
+            raise web.HTTPNotFound(text="no such invite")
+        return meta
+
+    async def _invite_approve(self, request: web.Request) -> web.Response:
+        meta = self._invite_meta(request, STATE_PENDING)
+        await self.slot_store.set_state(meta.index, STATE_APPROVED)
+        return web.json_response({"ok": True})
+
+    async def _invite_deny(self, request: web.Request) -> web.Response:
+        """Denies a sign-up or revokes an unused link -- either frees the slot."""
+        meta = self._invite_meta(request)
+        await self.slot_store.reset(meta.index)
+        return web.json_response({"ok": True})
+
+    async def _invite_check(self, request: web.Request) -> web.Response:
+        if self.slot_store.get_by_invite(request.match_info["token"]) is None:
+            raise web.HTTPNotFound(text="This invite link is invalid or was already used.")
+        return web.json_response({"ok": True})
+
+    async def _invite_register(self, request: web.Request) -> web.Response:
+        meta = self.slot_store.get_by_invite(request.match_info["token"])
+        if meta is None:
+            raise web.HTTPNotFound(text="This invite link is invalid or was already used.")
+        body = await request.json()
+        name = str(body.get("slot_name", "")).strip().lower()
+        password = str(body.get("password", ""))
+        full_name = str(body.get("full_name", "")).strip()[:100]
+        email = str(body.get("email", "")).strip()[:200]
+        if not password or not full_name or "@" not in email:
+            raise web.HTTPBadRequest(text="Name, password, full name and Spotify email are all required.")
+        error = await self.slot_store.register(meta.index, name, password, full_name, email)
+        if error:
+            raise web.HTTPBadRequest(text=error)
+        return web.json_response({"name": name})
 
     async def _link_finish(self, request: web.Request) -> web.Response:
         body = await request.json()
@@ -304,10 +379,12 @@ class DiagnosticsApi:
         pasted_url = body.get("pasted_url")
         if not user_id:
             raise web.HTTPBadRequest(text="user_id is required")
+        if SPOTIFY_DIRECT_CALLBACK and not pasted_url:
+            return self._poll_callback(self.link_manager, user_id)
         content, success = await self.link_manager.finish_link(user_id, pasted_url)
         return web.json_response({"message": content, "success": success})
 
-    def _poll_callback(self, manager: WebApiLinkManager, user_id: str) -> web.Response:
+    def _poll_callback(self, manager: LinkManager | WebApiLinkManager, user_id: str) -> web.Response:
         """Direct mode's finish: the callback does the real work, the
         dashboard just polls here until it has."""
         if user_id in self._callback_results:
@@ -322,12 +399,14 @@ class DiagnosticsApi:
     async def _spotify_callback(self, request: web.Request) -> web.Response:
         """Public OAuth redirect target for direct mode (config.
         SPOTIFY_DIRECT_CALLBACK) -- Spotify sends the browser here, via the
-        supervisor's /api proxy, after /link-web-api. The OAuth state says
-        which pending link it finishes. (/link never comes here -- it stays on
-        librespot's own client, see bot/spotify_link.py.)"""
+        supervisor's /api proxy, after either /link or /link-web-api. The
+        OAuth state says which pending link it finishes."""
         state = request.query.get("state", "")
-        manager = self.web_api_link_manager
-        user_id = manager.user_for_state(state)
+        user_id = self.link_manager.user_for_state(state)
+        manager = self.link_manager
+        if user_id is None:
+            user_id = self.web_api_link_manager.user_for_state(state)
+            manager = self.web_api_link_manager
         if user_id is None:
             return self._callback_page("That login link expired or was already used -- start linking again.", False)
 
@@ -367,6 +446,8 @@ class DiagnosticsApi:
             raise web.HTTPUnauthorized(text="wrong password")
         meta = self.slot_store.get_by_name(name)
         assert meta is not None
+        if meta.state == STATE_PENDING:
+            raise web.HTTPForbidden(text="This profile is waiting for the admin's approval.")
         if meta.avatar_url is None and meta.web_api_refresh_token is not None:
             # Backfills a slot that was web-api-linked before profile
             # seeding existed. Fire-and-forget: the dashboard just shows an

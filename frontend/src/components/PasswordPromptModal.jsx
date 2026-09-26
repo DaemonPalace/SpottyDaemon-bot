@@ -14,8 +14,8 @@ export default function PasswordPromptModal({ name, onClose, onUnlocked }) {
     try {
       const data = await selectSlot(name, password);
       onUnlocked(data);
-    } catch {
-      setError("Wrong password.");
+    } catch (err) {
+      setError(err.status === 401 ? "Wrong password." : err.message);
       setBusy(false);
     }
   }

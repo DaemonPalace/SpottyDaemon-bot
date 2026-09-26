@@ -1,6 +1,7 @@
 import { Navigate, Route, BrowserRouter as Router, Routes } from "react-router-dom";
 import "./App.css";
 import { useSupervisorStatus } from "./hooks/useSupervisorStatus";
+import InvitePage from "./pages/InvitePage";
 import SetupWizard from "./pages/SetupWizard";
 import SlotList from "./pages/SlotList";
 import SlotProfile from "./pages/SlotProfile";
@@ -25,6 +26,7 @@ export default function App() {
         <Route path="/slots" element={<SlotList />} />
         <Route path="/slots/:name" element={<SlotProfile />} />
         <Route path="/jam/:jamToken" element={<SlotProfile />} />
+        <Route path="/invite/:token" element={<InvitePage />} />
         <Route path="/" element={<RootRedirect />} />
         <Route path="*" element={<RootRedirect />} />
       </Routes>

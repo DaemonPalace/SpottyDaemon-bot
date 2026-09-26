@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { deleteSlot, listSlots, login, startBot } from "../api/client";
+import { deleteSlot, listInvites, listSlots, login, startBot } from "../api/client";
 import AdminSettingsModal from "../components/AdminSettingsModal";
-import CreateProfileModal from "../components/CreateProfileModal";
+import InvitesModal from "../components/InvitesModal";
 import PasswordPromptModal from "../components/PasswordPromptModal";
 import ProfileCircle from "../components/ProfileCircle";
 import { useSupervisorStatus } from "../hooks/useSupervisorStatus";
@@ -63,7 +63,8 @@ export default function SlotList() {
   const [starting, setStarting] = useState(false);
   const [managing, setManaging] = useState(false);
   const [unlocking, setUnlocking] = useState(null); // slot name, or null
-  const [creating, setCreating] = useState(false);
+  const [showInvites, setShowInvites] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   const [deleting, setDeleting] = useState(null); // slot name, or null
   const [showAdminSettings, setShowAdminSettings] = useState(false);
   const navigate = useNavigate();
@@ -76,6 +77,10 @@ export default function SlotList() {
     } catch (err) {
       setError(err.message);
     }
+    // Admin-only: just no badge without an admin session.
+    listInvites()
+      .then((data) => setPendingCount(data.invites.filter((i) => i.state === "pending").length))
+      .catch(() => {});
   }
 
   async function handleStartBot() {
@@ -108,20 +113,31 @@ export default function SlotList() {
     );
   }
 
-  const claimed = slots.filter((s) => s.state === "claimed");
-  const hasFreeSlot = slots.some((s) => s.state === "free");
+  // Approved invitees show up too -- logging in takes them to linking.
+  const claimed = slots.filter((s) => ["claimed", "approved", "linking"].includes(s.state));
 
   return (
     <div className="profile-select">
-      <button
-        type="button"
-        className="ghost icon-btn profile-admin-btn"
-        onClick={() => setShowAdminSettings(true)}
-        aria-label="Admin settings"
-        title="Admin settings"
-      >
-        ⚙
-      </button>
+      <div className="profile-admin-btn">
+        <button
+          type="button"
+          className="ghost icon-btn invites-btn"
+          onClick={() => setShowInvites(true)}
+          aria-label="Invites"
+          title="Invites"
+        >
+          ✉{pendingCount > 0 && <span className="profile-circle-badge">{pendingCount}</span>}
+        </button>
+        <button
+          type="button"
+          className="ghost icon-btn"
+          onClick={() => setShowAdminSettings(true)}
+          aria-label="Admin settings"
+          title="Admin settings"
+        >
+          ⚙
+        </button>
+      </div>
       <h1 className="profile-select-title">Who's playing?</h1>
       {error && <p className="error">{error}</p>}
 
@@ -140,12 +156,7 @@ export default function SlotList() {
           </div>
         ))}
 
-        {!managing && hasFreeSlot && (
-          <div className="profile-item">
-            <ProfileCircle name="+" onClick={() => setCreating(true)} size="lg" />
-            <span className="profile-item-name">Add profile</span>
-          </div>
-        )}
+        {claimed.length === 0 && <p className="hint">No profiles yet -- send an invite with ✉.</p>}
       </div>
 
       {claimed.length > 0 && (
@@ -162,15 +173,7 @@ export default function SlotList() {
         />
       )}
 
-      {creating && (
-        <CreateProfileModal
-          onClose={() => setCreating(false)}
-          onCreated={() => {
-            setCreating(false);
-            refresh();
-          }}
-        />
-      )}
+      {showInvites && <InvitesModal onClose={() => setShowInvites(false)} onChanged={refresh} />}
 
       {deleting && (
         <DeleteConfirmModal

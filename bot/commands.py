@@ -596,8 +596,11 @@ async def do_link(
     user_id: str, slot_name: str, password: str, link_manager: LinkManager
 ) -> tuple[str, bool]:
     """Returns (content, ephemeral). Always ephemeral -- this is always sent
-    to whoever ran the command, never posted to the channel."""
-    content, _success = await link_manager.start_link(user_id, slot_name, password)
+    to whoever ran the command, never posted to the channel. Only links a
+    profile the admin approved from a dashboard invite (slot_store.py)."""
+    if not link_manager.store.verify_password(slot_name.strip().lower(), password):
+        return "Wrong profile name or password.", True
+    content, _success = await link_manager.start_link(user_id, slot_name)
     return content, True
 
 
@@ -631,7 +634,7 @@ async def do_delete_slot(
         os.remove(spotify_slot.pipe_path)
 
     await store.reset(slot_meta.index)
-    return f"Slot '{slot_name}' deleted and freed up for /link.", False
+    return f"Slot '{slot_name}' deleted and freed up.", False
 
 
 async def do_link_web_api(

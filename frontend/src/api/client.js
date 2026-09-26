@@ -45,7 +45,7 @@ export const changeAdminPassword = (newPassword) =>
 // Slots (open to the dashboard; deleteSlot is the one route that needs the
 // admin session cookie -- see supervisor/auth.py's _is_admin_gated)
 export const listSlots = () => request("GET", "/api/slots");
-export const startLink = (slot_name, password) => request("POST", "/api/slots/link/start", { slot_name, password });
+export const startLink = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/link/start`, {});
 export const finishLink = (user_id, pasted_url) => request("POST", "/api/slots/link/finish", { user_id, pasted_url });
 export const selectSlot = (name, password) => request("POST", `/api/slots/${encodeURIComponent(name)}/select`, { password });
 export const getJamSlot = (token) => request("GET", `/api/jam/${encodeURIComponent(token)}`);
@@ -60,6 +60,14 @@ export const updateSlotSettings = (name, { currentPassword, newName, newPassword
     new_password: newPassword,
     avatar_url: avatarUrl,
   });
+
+// Invites: admin creates/reviews (admin session), invitee signs up (public)
+export const listInvites = () => request("GET", "/api/invites");
+export const createInvite = () => request("POST", "/api/invites", {});
+export const approveInvite = (index) => request("POST", `/api/invites/${index}/approve`, {});
+export const denyInvite = (index) => request("POST", `/api/invites/${index}/deny`, {});
+export const checkInvite = (token) => request("GET", `/api/invite/${encodeURIComponent(token)}`);
+export const registerInvite = (token, body) => request("POST", `/api/invite/${encodeURIComponent(token)}`, body);
 
 // Player (by slot name) -- now-playing + queue in one request, see
 // bot/api.py's _player_state

@@ -220,7 +220,7 @@ def handler(event, context):
                 f"{command_name}:{slot_value}", f"Password for '{slot_value}'"
             )
         slotname_value = options.get("slotname", "")
-        return _password_modal_response(f"link:{slotname_value}", f"Set a password for '{slotname_value}'")
+        return _password_modal_response(f"link:{slotname_value}", f"Password for '{slotname_value}'")
 
     if interaction_type == TYPE_MESSAGE_COMPONENT:
         custom_id = body["data"]["custom_id"]

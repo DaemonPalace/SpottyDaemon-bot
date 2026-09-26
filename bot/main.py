@@ -256,8 +256,8 @@ async def play(interaction: discord.Interaction, query: str):
     await interaction.followup.send(view=TrackResultsView(interaction.guild.id, results), ephemeral=True)
 
 
-@tree.command(name="link", description="Claim a free Spotify slot and link your own Spotify account")
-@app_commands.describe(slotname="Name for this slot, e.g. your username (lowercase, no spaces)")
+@tree.command(name="link", description="Link Spotify for your approved profile (from a dashboard invite)")
+@app_commands.describe(slotname="Your profile name")
 async def link(interaction: discord.Interaction, slotname: str):
     user_id = str(interaction.user.id)
 
@@ -276,7 +276,7 @@ async def link(interaction: discord.Interaction, slotname: str):
         else:
             await modal_interaction.followup.send(content, ephemeral=ephemeral)
 
-    await interaction.response.send_modal(PasswordModal(f"Set a password for '{slotname}'", handle_submit))
+    await interaction.response.send_modal(PasswordModal(f"Password for '{slotname}'", handle_submit))
 
 
 @tree.command(name="link-finish", description="Finish /link (paste the url your browser failed to load, or leave blank if it loaded fine)")

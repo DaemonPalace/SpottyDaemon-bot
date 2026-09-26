@@ -106,10 +106,8 @@ SPOTIFY_WEB_API_REDIRECT_URI = os.environ.get("SPOTIFY_WEB_API_REDIRECT_URI") or
     else "http://127.0.0.1:5589/callback"
 )
 # Direct linking: Spotify redirects the browser straight back to this bot's
-# public callback (bot/api.py's _spotify_callback), so /link-web-api doesn't
-# need the copy-the-failed-url-back step. (/link always does -- it stays on
-# librespot's own client so no allowlist is needed, see spotify_link.py.)
-# Needs our own
+# public callback (bot/api.py's _spotify_callback), so neither /link nor
+# /link-web-api needs the copy-the-failed-url-back step. Needs our own
 # Spotify app (SPOTIFY_CLIENT_ID) with the callback registered on it -- the
 # supervisor/install.sh set SPOTIFY_WEB_API_REDIRECT_URI to it whenever the
 # domain is entered. Anything else keeps the paste-back flow.

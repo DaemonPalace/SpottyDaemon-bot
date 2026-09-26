@@ -164,7 +164,7 @@ export default function AdminSettingsModal({ onClose }) {
         <h3>Public dashboard</h3>
         <p className="hint">
           Domain this dashboard is served on. When set, /jam posts an "Open dashboard" link anyone in the channel can use
-          without the slot password, and the Redirect URI above is set to its callback so Web API linking finishes on
+          without the slot password, and the Redirect URI above is set to its callback so Spotify linking finishes on
           its own (no pasting urls back).
         </p>
         {field("PUBLIC_DASHBOARD_URL", "Public URL (e.g. https://music.example.com)")}

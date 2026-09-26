@@ -46,7 +46,10 @@ async def main():
         return web.json_response({"ok": True})
 
     # Stub every gated handler out -- only the middleware is under test.
-    for attr in ("_player_state", "_slot_settings", "_web_api_link_start", "_slot_delete", "_sessions", "_artist_detail"):
+    for attr in (
+        "_player_state", "_slot_settings", "_web_api_link_start", "_slot_delete", "_sessions", "_artist_detail",
+        "_invites", "_invite_check",
+    ):
         setattr(diag, attr, ok)
 
     async def fake_token(name):
@@ -86,6 +89,11 @@ async def main():
             assert await resp.text() == "wrong password"  # reached the handler, not the middleware
         assert await status("GET", "/api/sessions") == 401
         assert await status("GET", "/api/sessions", **{"X-Admin": "1"}) == 200
+        # Invite review is admin-only; an invite link itself is public (even one starting with "s").
+        assert await status("GET", "/api/invites") == 401
+        assert await status("GET", "/api/invites", **{"X-Admin": "1"}) == 200
+        assert await status("POST", "/api/invites/1/approve") == 401
+        assert await status("GET", "/api/invite/sometoken") == 200
 
     print("slot access checks passed")
 

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 const POLL_INTERVAL_MS = 3000;
+// Spotify said no (429 rate limit / 403 not allowed): polling every 3s
+// only keeps the limit tripped, so back off hard until it clears.
+const BLOCKED_POLL_INTERVAL_MS = 60000;
 
 /** Polls now-playing + queue (one combined request, see bot/api.py's
  * _player_state) for either an admin-session slot (by name) or a jam-mode
@@ -19,14 +22,16 @@ export function useSlotPlayer({ name, jamToken, fetchers }) {
   const getPlayerState = fetchers.getPlayerState;
 
   const refresh = useCallback(async () => {
-    if (!key) return;
+    if (!key) return true;
     try {
       const state = await getPlayerState(key);
       setNowPlaying(state.now_playing);
       setQueue({ appQueue: state.app_queue, upNext: state.up_next, playlist: state.playlist });
       setError(null);
+      return true;
     } catch (err) {
       setError(err);
+      return err.status !== 429 && err.status !== 403;
     }
     // `fetchers` is a fresh object literal on every caller render, but the
     // function it carries is a stable module-level export -- depending on
@@ -42,10 +47,11 @@ export function useSlotPlayer({ name, jamToken, fetchers }) {
     let timer;
 
     async function tick() {
+      let ok = true;
       if (document.visibilityState === "visible") {
-        await refresh();
+        ok = await refresh();
       }
-      if (!cancelled) timer = setTimeout(tick, POLL_INTERVAL_MS);
+      if (!cancelled) timer = setTimeout(tick, ok ? POLL_INTERVAL_MS : BLOCKED_POLL_INTERVAL_MS);
     }
 
     tick();

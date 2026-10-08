@@ -1,10 +1,13 @@
 import json
 import os
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# ENV_PATH: the hosted platform keeps .env on persistent storage (unset:
+# dotenv finds the repo-root .env as before).
+load_dotenv(os.environ.get("ENV_PATH"))
 
 # If set, credentials (currently just DISCORD_TOKEN) are pulled from this AWS
 # Secrets Manager secret (a single JSON blob) instead of the environment/.env
@@ -32,9 +35,12 @@ _secrets = _load_secrets()
 
 
 def _get(key: str) -> str:
+    # Blank rather than KeyError when unset: the supervisor imports this
+    # module (via slot_store) before first-run setup has written a token.
+    # A bot started without one fails Discord login and shows as crash_looping.
     if key in _secrets:
         return _secrets[key]
-    return os.environ[key]
+    return os.environ.get(key, "")
 
 
 DISCORD_TOKEN = _get("DISCORD_TOKEN")
@@ -42,14 +48,26 @@ DISCORD_TOKEN = _get("DISCORD_TOKEN")
 # Optional: unset means "no Lambda/SQS relay -- run the gateway CommandTree
 # directly," the default and only path for a self-hosted/standalone install.
 INTERACTIONS_QUEUE_URL = os.environ.get("INTERACTIONS_QUEUE_URL")
+# Hosted platform only (tenant.yaml): this bot's Interactions Endpoint URL on
+# the platform Lambda, and the tenants table row (TENANT_ID) the Lambda reads
+# its Discord public key from. With all three set, the bot registers both on
+# startup (interaction_relay.register_endpoint), so a customer never has to.
+INTERACTIONS_ENDPOINT_URL = os.environ.get("INTERACTIONS_ENDPOINT_URL")
+TENANTS_TABLE = os.environ.get("TENANTS_TABLE")
+TENANT_ID = os.environ.get("TENANT_ID")
 IDLE_SHUTDOWN_MINUTES = int(os.environ.get("IDLE_SHUTDOWN_MINUTES", "20"))
 IDLE_CHECK_INTERVAL_SECONDS = int(os.environ.get("IDLE_CHECK_INTERVAL_SECONDS", "30"))
 # Set to "false" to disable self-stopping the host on idle (e.g. local testing).
 ENABLE_AUTO_SHUTDOWN = os.environ.get("ENABLE_AUTO_SHUTDOWN", "true").lower() == "true"
 # Which HostController implements "stop the host" (idle shutdown, /sleep):
 # "noop" (default, self-host/standalone -- the user turns the app off
-# themselves) or "ec2" (legacy AWS deployment, see bot/host_control.py).
+# themselves), "ec2" (legacy AWS deployment) or "ecs" (hosted platform) --
+# see bot/host_control.py.
 HOST_CONTROLLER = os.environ.get("HOST_CONTROLLER", "noop")
+# HOST_CONTROLLER=ecs (the hosted platform): the ECS service this bot runs
+# as, which stop_host() scales to zero. Set by the tenant's task definition.
+ECS_CLUSTER = os.environ.get("ECS_CLUSTER")
+ECS_SERVICE = os.environ.get("ECS_SERVICE")
 
 # Read-only diagnostics REST API (bot/api.py). Loopback-only by default --
 # not exposed off-box unless deliberately rebound. If API_TOKEN is unset the
@@ -83,6 +101,21 @@ SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
 # Optional -- only needed if the app is registered as a confidential client;
 # a PKCE public client doesn't require one.
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
+# Development-mode Spotify apps only allow a few allowlisted users each, so
+# both of the above may be comma-separated lists of several apps (secrets
+# positionally matched, blank for a public client: "secret1,,secret3").
+# Slot N uses app (N-1) // SPOTIFY_USERS_PER_APP, so slots 1-5 stay on the
+# first app. Every app needs SPOTIFY_WEB_API_REDIRECT_URI registered on it,
+# and MAX_SLOTS raised to cover the extra slots.
+SPOTIFY_USERS_PER_APP = int(os.environ.get("SPOTIFY_USERS_PER_APP", "5"))
+SPOTIFY_APPS = [
+    (client_id.strip(), secret.strip() or None)
+    for client_id, secret in zip(
+        (SPOTIFY_CLIENT_ID or "").split(","),
+        (SPOTIFY_CLIENT_SECRET or "").split(",") + [""] * (SPOTIFY_CLIENT_ID or "").count(","),
+    )
+    if client_id.strip()
+]
 SPOTIFY_WEB_API_REDIRECT_URI = os.environ.get("SPOTIFY_WEB_API_REDIRECT_URI") or (
     # Spotify only allows plain HTTP on loopback, so an http:// LAN dashboard
     # can't be the callback -- keep the paste-back default for it.
@@ -134,11 +167,20 @@ class SpotifySlot:
     pipe_path: str
 
 
+# Spotify Connect device names default to <subdomain>-<N> (the dashboard
+# url's first label, e.g. "alice-1" for https://alice.example.com) so two
+# bots on one Spotify account or Discord server don't both show up as
+# "discord-bot-1". No subdomain (unset, bare domain, IP): discord-bot-<N>.
+_dashboard_host = urlparse(PUBLIC_DASHBOARD_URL).hostname or ""
+_subdomain = _dashboard_host.split(".")[0] if _dashboard_host.count(".") >= 2 else ""
+DEVICE_NAME_PREFIX = _subdomain if _subdomain and not _subdomain.isdigit() else "discord-bot"
+
+
 def _slot(index: int) -> SpotifySlot:
     prefix = f"SPOTIFY_{index}_"
     return SpotifySlot(
         index=index,
-        name=os.environ.get(f"{prefix}DEVICE_NAME", f"discord-bot-{index}"),
+        name=os.environ.get(f"{prefix}DEVICE_NAME", f"{DEVICE_NAME_PREFIX}-{index}"),
         cache_dir=os.path.join(LIBRESPOT_CACHE_DIR, f"slot{index}"),
         pipe_path=os.path.join(PIPE_DIR, f"slot{index}.pcm"),
     )

@@ -27,8 +27,9 @@ SESSION_LIFETIME_SECONDS = 7 * 24 * 3600
 # in active use never expires mid-use.
 REISSUE_THRESHOLD_SECONDS = 24 * 3600
 
-# Requests that need an admin session: deleting a slot, and reading the
-# bot's raw logs (see module docstring). Every other route (frontend SPA
+# Requests that need an admin session: deleting a slot, reading the bot's
+# raw logs (see module docstring), settings, and stopping, restarting or
+# updating the bot. Every other route (frontend SPA
 # shell, all other /api/* endpoints) is reachable with no session at all.
 def _is_admin_gated(method: str, path: str) -> bool:
     if method == "DELETE" and path.startswith("/api/slots/"):
@@ -38,6 +39,10 @@ def _is_admin_gated(method: str, path: str) -> bool:
     if path == "/api/supervisor/settings" and method in ("GET", "POST"):
         return True
     if method == "POST" and path == "/api/supervisor/admin-password":
+        return True
+    # Starting the bot stays open (the dashboard offers it to anyone when the
+    # bot is down, same as /wake); stopping or restarting it is admin-only.
+    if method == "POST" and path in ("/api/supervisor/bot/stop", "/api/supervisor/bot/restart", "/api/supervisor/update"):
         return True
     return False
 

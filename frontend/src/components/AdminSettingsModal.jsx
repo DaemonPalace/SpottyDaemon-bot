@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { changeAdminPassword, getAdminSettings, login, updateAdminSettings } from "../api/client";
+import { changeAdminPassword, getAdminSettings, getStatus, login, updateAdminSettings } from "../api/client";
+import EndpointUrl from "./EndpointUrl";
 import Modal from "./Modal";
 
-const SECRET_KEYS = new Set(["DISCORD_TOKEN", "SPOTIFY_CLIENT_SECRET"]);
+const SECRET_KEYS = new Set(["DISCORD_TOKEN"]);
 
 /** Admin-only settings: bot token, Spotify Web API credentials, a few
  * self-host knobs, and the admin password -- everything else in
@@ -22,9 +23,14 @@ export default function AdminSettingsModal({ onClose }) {
   const [error, setError] = useState(null);
   const [notice, setNotice] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [endpointUrl, setEndpointUrl] = useState(null); // hosted only
 
   useEffect(() => {
-    if (unlocked) getAdminSettings().then(setFields).catch((err) => setError(err.message));
+    if (!unlocked) return;
+    getAdminSettings().then(setFields).catch((err) => setError(err.message));
+    getStatus()
+      .then((data) => setEndpointUrl(data.interactions_endpoint_url || null))
+      .catch(() => {});
   }, [unlocked]);
 
   async function handleUnlock(e) {
@@ -91,7 +97,10 @@ export default function AdminSettingsModal({ onClose }) {
 
   if (!fields) return null;
 
+  // A hosted install's platform-managed settings (LOCKED_SETTINGS) aren't
+  // sent at all -- skip them rather than render an empty field.
   function field(key, label, opts = {}) {
+    if (!(key in fields)) return null;
     const secret = SECRET_KEYS.has(key);
     return (
       <label key={key}>
@@ -111,42 +120,90 @@ export default function AdminSettingsModal({ onClose }) {
     );
   }
 
+  // Several Spotify apps, since a development-mode app only serves ~5
+  // allowlisted users. Slot N uses app (N-1)/5 -- see bot/config.py's
+  // SPOTIFY_APPS. A blank secret keeps the one saved for that client id.
+  const apps = edits.SPOTIFY_APPS ?? fields.SPOTIFY_APPS.value.map((a) => ({ ...a, secret: "" }));
+  const setApps = (next) => setEdits({ ...edits, SPOTIFY_APPS: next });
+  const setApp = (i, patch) => setApps(apps.map((a, j) => (j === i ? { ...a, ...patch } : a)));
+
   return (
     <Modal title="Admin settings" onClose={onClose} wide>
       <form onSubmit={handleSave} className="form">
         <h3>Discord</h3>
         {field("DISCORD_TOKEN", "Bot token")}
+        {endpointUrl && (
+          <EndpointUrl url={endpointUrl}>
+            Your Discord app's General Information page needs this, so /wake works while the bot sleeps.
+          </EndpointUrl>
+        )}
 
         <h3>Spotify Web API</h3>
         <p className="hint">
           Now-playing, queue, search, playlists, library. Register an app at developer.spotify.com and add the Redirect
           URI below to it.
         </p>
-        {field("SPOTIFY_CLIENT_ID", "Client ID")}
-        {field("SPOTIFY_CLIENT_SECRET", "Client secret")}
+        <p className="hint">
+          Each app only lets the 5 users on its User Management list in, so add one app per 5 slots and raise Max slots
+          to match. Slots are tied to an app by position -- removing or reordering apps means those users relink.
+        </p>
+        {apps.map((app, i) => (
+          <fieldset key={i} className="form" style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "0.75rem" }}>
+            <legend className="hint">
+              App {i + 1} -- slots {i * 5 + 1}-{i * 5 + 5}
+            </legend>
+            <label>
+              Client ID
+              <input value={app.clientId} onChange={(e) => setApp(i, { clientId: e.target.value })} />
+            </label>
+            <label>
+              Client secret
+              <input
+                type="password"
+                placeholder={app.secretSet ? "Currently set -- leave blank to keep it" : "Optional"}
+                value={app.secret}
+                onChange={(e) => setApp(i, { secret: e.target.value })}
+              />
+            </label>
+            <button type="button" className="ghost" onClick={() => setApps(apps.filter((_, j) => j !== i))}>
+              Remove app
+            </button>
+          </fieldset>
+        ))}
+        <button type="button" className="ghost" onClick={() => setApps([...apps, { clientId: "", secret: "" }])}>
+          Add Spotify app
+        </button>
         {field("SPOTIFY_WEB_API_REDIRECT_URI", "Redirect URI")}
 
-        <h3>Public dashboard</h3>
-        <p className="hint">
-          Domain this dashboard is served on. When set, /jam posts an "Open dashboard" link anyone in the channel can use
-          without the slot password, and the Redirect URI above is set to its callback so Spotify linking finishes on
-          its own (no pasting urls back).
-        </p>
-        {field("PUBLIC_DASHBOARD_URL", "Public URL (e.g. https://music.example.com)")}
+        {"PUBLIC_DASHBOARD_URL" in fields && (
+          <>
+            <h3>Public dashboard</h3>
+            <p className="hint">
+              Domain this dashboard is served on. When set, /jam posts an "Open dashboard" link anyone in the channel can use
+              without the slot password, and the Redirect URI above is set to its callback so Spotify linking finishes on
+              its own (no pasting urls back).
+            </p>
+            {field("PUBLIC_DASHBOARD_URL", "Public URL (e.g. https://music.example.com)")}
+          </>
+        )}
 
-        <h3>Bot settings</h3>
+        {["MAX_SLOTS", "IDLE_SHUTDOWN_MINUTES", "ENABLE_AUTO_SHUTDOWN"].some((key) => key in fields) && (
+          <h3>Bot settings</h3>
+        )}
         {field("MAX_SLOTS", "Max slots", { type: "number" })}
         {field("IDLE_SHUTDOWN_MINUTES", "Idle shutdown (minutes)", { type: "number" })}
-        <label>
-          Auto-shutdown on idle
-          <select
-            value={"ENABLE_AUTO_SHUTDOWN" in edits ? edits.ENABLE_AUTO_SHUTDOWN : fields.ENABLE_AUTO_SHUTDOWN.value || "true"}
-            onChange={(e) => setEdits({ ...edits, ENABLE_AUTO_SHUTDOWN: e.target.value })}
-          >
-            <option value="true">On</option>
-            <option value="false">Off</option>
-          </select>
-        </label>
+        {"ENABLE_AUTO_SHUTDOWN" in fields && (
+          <label>
+            Auto-shutdown on idle
+            <select
+              value={"ENABLE_AUTO_SHUTDOWN" in edits ? edits.ENABLE_AUTO_SHUTDOWN : fields.ENABLE_AUTO_SHUTDOWN.value || "true"}
+              onChange={(e) => setEdits({ ...edits, ENABLE_AUTO_SHUTDOWN: e.target.value })}
+            >
+              <option value="true">On</option>
+              <option value="false">Off</option>
+            </select>
+          </label>
+        )}
 
         <h3>Admin password</h3>
         <label>

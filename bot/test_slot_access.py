@@ -30,6 +30,9 @@ class StubStore:
     def verify_password(self, name, password):
         return False
 
+    def password_locked(self, name):
+        return False
+
 
 class StubJam:
     def slot_index_for_token(self, token):
@@ -46,8 +49,16 @@ async def main():
         return web.json_response({"ok": True})
 
     # Stub every gated handler out -- only the middleware is under test.
-    for attr in ("_player_state", "_slot_settings", "_web_api_link_start", "_slot_delete", "_sessions"):
+    for attr in (
+        "_player_state", "_slot_settings", "_web_api_link_start", "_slot_delete", "_sessions", "_artist_detail",
+        "_invites", "_invite_check",
+    ):
         setattr(diag, attr, ok)
+
+    async def fake_token(name):
+        return "t"
+
+    diag._get_slot_access_token = fake_token
 
     async with TestClient(TestServer(diag._build_app())) as client:
 
@@ -66,6 +77,13 @@ async def main():
         assert await status("POST", "/api/slots/alice/settings", **{"X-Slot-Token": "jamtok"}) == 401
         assert await status("POST", "/api/slots/alice/web-api-link/start", **{"X-Slot-Token": "jamtok"}) == 401
         assert await status("DELETE", "/api/slots/alice", **{"X-Slot-Token": "jamtok"}) == 401
+        # Jam guests browse artists; bad search types and non-context URIs are rejected before Spotify.
+        assert await status("GET", "/api/slots/alice/artists/x", **{"X-Slot-Token": "jamtok"}) == 200
+        assert await status("GET", "/api/slots/alice/search?q=a&type=show", **{"X-Slot-Token": "jamtok"}) == 400
+        async with client.post(
+            "/api/slots/alice/player/play-context", json={"uri": "spotify:track:x"}, headers={"X-Slot-Token": "jamtok"}
+        ) as resp:
+            assert resp.status == 400
         # Password change invalidates old sessions.
         store.slot.password_hash = hash_password("new")
         assert await status("GET", state, **{"X-Slot-Token": good}) == 401
@@ -74,6 +92,31 @@ async def main():
             assert await resp.text() == "wrong password"  # reached the handler, not the middleware
         assert await status("GET", "/api/sessions") == 401
         assert await status("GET", "/api/sessions", **{"X-Admin": "1"}) == 200
+        # Invite review is admin-only; an invite link itself is public (even one starting with "s").
+        assert await status("GET", "/api/invites") == 401
+        assert await status("GET", "/api/invites", **{"X-Admin": "1"}) == 200
+        assert await status("POST", "/api/invites/1/approve") == 401
+        assert await status("GET", "/api/invite/sometoken") == 200
+
+    # A daily-quota 429 answers that request only -- no slot-wide cooldown.
+    blocked = []
+    diag.web_api_link_manager = type("W", (), {"block": lambda self, i, s: blocked.append(i)})()
+
+    async def quota(request):
+        raise api.spotify_player_api.SpotifyApiError("x", 429, '{"reason":"QUOTA_EXCEEDED"}', 50000)
+
+    async def limited(request):
+        raise api.spotify_player_api.SpotifyApiError("x", 429, "", 30)
+
+    diag._playlists, diag._recently_played = quota, limited
+    async with TestClient(TestServer(diag._build_app())) as client:
+        headers = {"X-Admin": "1"}
+        async with client.get("/api/slots/alice/playlists", headers=headers) as resp:
+            assert resp.status == 429 and "daily limit" in (await resp.json())["message"]
+        assert blocked == []
+        async with client.get("/api/slots/alice/recently-played", headers=headers) as resp:
+            assert resp.status == 429
+        assert blocked == [1]
 
     print("slot access checks passed")
 

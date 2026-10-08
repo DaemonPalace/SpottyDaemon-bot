@@ -13,6 +13,22 @@ log = logging.getLogger("spotify_player_api")
 API_BASE = "https://api.spotify.com/v1"
 
 
+class SpotifyApiError(RuntimeError):
+    """A non-2xx from Spotify. status/retry_after let bot/api.py turn a 429
+    or 403 into a clear message and a cooldown instead of a bare 500."""
+
+    def __init__(self, what: str, status: int, body: str, retry_after: int | None = None):
+        super().__init__(f"{what} failed ({status}): {body}")
+        self.status = status
+        self.body = body
+        self.retry_after = retry_after
+
+
+async def _error(what: str, resp: aiohttp.ClientResponse) -> SpotifyApiError:
+    retry_after = resp.headers.get("Retry-After", "")
+    return SpotifyApiError(what, resp.status, await resp.text(), int(retry_after) if retry_after.isdigit() else None)
+
+
 async def get_now_playing(access_token: str) -> dict | None:
     """None if nothing is currently playing (Spotify returns 204 for that)."""
     async with aiohttp.ClientSession() as session:
@@ -24,7 +40,7 @@ async def get_now_playing(access_token: str) -> dict | None:
             if resp.status == 204:
                 return None
             if resp.status >= 300:
-                raise RuntimeError(f"get_now_playing failed ({resp.status}): {await resp.text()}")
+                raise await _error("get_now_playing", resp)
             return await resp.json()
 
 
@@ -36,25 +52,61 @@ async def get_queue(access_token: str) -> dict:
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status >= 300:
-                raise RuntimeError(f"get_queue failed ({resp.status}): {await resp.text()}")
+                raise await _error("get_queue", resp)
             return await resp.json()
 
 
-async def search_tracks(access_token: str, query: str) -> list[dict]:
-    # No `limit` param -- as of writing, Spotify's /search rejects it
-    # outright ("Invalid limit") regardless of value. Its default page size
-    # (20) is plenty for an inline dropdown; the frontend trims further.
+async def search(access_token: str, query: str, types: str, offset: int = 0) -> dict:
+    """One /search call for any mix of track/artist/album/playlist, as
+    {"tracks": {"items": [...], "next": ...}, "artists": ...}. No `limit`
+    param -- Spotify's /search rejects it ("Invalid limit") and pages at 10
+    in Development Mode; callers page with `offset`. Playlist results can
+    contain null entries, dropped here."""
     async with aiohttp.ClientSession() as session:
         async with session.get(
             f"{API_BASE}/search",
-            params={"q": query, "type": "track"},
+            params={"q": query, "type": types, "offset": offset},
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status >= 300:
-                raise RuntimeError(f"search_tracks failed ({resp.status}): {await resp.text()}")
+                raise await _error("search", resp)
             body = await resp.json()
-            return body.get("tracks", {}).get("items", [])
+            for paging in body.values():
+                paging["items"] = [item for item in paging.get("items", []) if item]
+            return body
+
+
+async def search_tracks(access_token: str, query: str) -> list[dict]:
+    return (await search(access_token, query, "track"))["tracks"]["items"]
+
+
+async def get_artist(access_token: str, artist_id: str) -> dict:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{API_BASE}/artists/{artist_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status >= 300:
+                raise await _error("get_artist", resp)
+            return await resp.json()
+
+
+async def get_artist_albums(access_token: str, artist_id: str) -> list[dict]:
+    """Albums and singles/EPs, first page only (Spotify's default size).
+    ponytail: one page, add offset paging if long discographies get cut."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(
+            f"{API_BASE}/artists/{artist_id}/albums",
+            params={"include_groups": "album,single"},
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=aiohttp.ClientTimeout(total=10),
+        ) as resp:
+            if resp.status >= 300:
+                raise await _error("get_artist_albums", resp)
+            body = await resp.json()
+            return [album for album in body.get("items", []) if album]
 
 
 async def get_saved_albums(access_token: str, limit: int = 50) -> list[dict] | None:
@@ -70,7 +122,7 @@ async def get_saved_albums(access_token: str, limit: int = 50) -> list[dict] | N
             if resp.status == 403:
                 return None
             if resp.status >= 300:
-                raise RuntimeError(f"get_saved_albums failed ({resp.status}): {await resp.text()}")
+                raise await _error("get_saved_albums", resp)
             body = await resp.json()
             return [item["album"] for item in body.get("items", [])]
 
@@ -85,7 +137,7 @@ async def get_album(access_token: str, album_id: str) -> dict:
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status >= 300:
-                raise RuntimeError(f"get_album failed ({resp.status}): {await resp.text()}")
+                raise await _error("get_album", resp)
             return await resp.json()
 
 
@@ -98,7 +150,7 @@ async def get_track(access_token: str, track_uri: str) -> dict:
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status >= 300:
-                raise RuntimeError(f"get_track failed ({resp.status}): {await resp.text()}")
+                raise await _error("get_track", resp)
             return await resp.json()
 
 
@@ -111,7 +163,7 @@ async def add_to_queue(access_token: str, track_uri: str) -> None:
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status >= 300:
-                raise RuntimeError(f"add_to_queue failed ({resp.status}): {await resp.text()}")
+                raise await _error("add_to_queue", resp)
 
 
 async def _player_put(
@@ -129,7 +181,7 @@ async def _player_put(
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status >= 300:
-                raise RuntimeError(f"{path} failed ({resp.status}): {await resp.text()}")
+                raise await _error("{path}", resp)
 
 
 async def play(access_token: str) -> None:
@@ -178,7 +230,7 @@ async def get_devices(access_token: str) -> list[dict]:
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status >= 300:
-                raise RuntimeError(f"get_devices failed ({resp.status}): {await resp.text()}")
+                raise await _error("get_devices", resp)
             body = await resp.json()
             return body.get("devices", [])
 
@@ -186,7 +238,7 @@ async def get_devices(access_token: str) -> list[dict]:
 async def find_device(access_token: str, device_name: str) -> dict | None:
     """Resolves librespot's Spotify Connect device object (id, is_active,
     ...) by the name it registered with (SpotifySlot.name, e.g.
-    "discord-bot-1", not the slot's friendly Discord-facing name) -- see
+    "alice-1" or "discord-bot-1", not the slot's friendly Discord-facing name) -- see
     play_uri/transfer_playback for why this matters."""
     devices = await get_devices(access_token)
     for device in devices:
@@ -215,7 +267,7 @@ async def next_track(access_token: str) -> None:
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status >= 300:
-                raise RuntimeError(f"next_track failed ({resp.status}): {await resp.text()}")
+                raise await _error("next_track", resp)
 
 
 async def previous_track(access_token: str) -> None:
@@ -226,7 +278,7 @@ async def previous_track(access_token: str) -> None:
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status >= 300:
-                raise RuntimeError(f"previous_track failed ({resp.status}): {await resp.text()}")
+                raise await _error("previous_track", resp)
 
 
 async def get_recently_played(access_token: str, limit: int = 20) -> list[dict] | None:
@@ -242,7 +294,7 @@ async def get_recently_played(access_token: str, limit: int = 20) -> list[dict] 
             if resp.status == 403:
                 return None
             if resp.status >= 300:
-                raise RuntimeError(f"get_recently_played failed ({resp.status}): {await resp.text()}")
+                raise await _error("get_recently_played", resp)
             body = await resp.json()
             return [item["track"] for item in body.get("items", [])]
 
@@ -259,7 +311,7 @@ async def get_playlists(access_token: str, limit: int = 50) -> list[dict] | None
             if resp.status == 403:
                 return None
             if resp.status >= 300:
-                raise RuntimeError(f"get_playlists failed ({resp.status}): {await resp.text()}")
+                raise await _error("get_playlists", resp)
             body = await resp.json()
             return body.get("items", [])
 
@@ -272,26 +324,22 @@ async def get_playlist(access_token: str, playlist_id: str) -> dict:
             timeout=aiohttp.ClientTimeout(total=10),
         ) as resp:
             if resp.status >= 300:
-                raise RuntimeError(f"get_playlist failed ({resp.status}): {await resp.text()}")
+                raise await _error("get_playlist", resp)
             return await resp.json()
 
 
-async def get_playlist_track_count(access_token: str, playlist_id: str) -> int:
-    """GET /me/playlists (get_playlists above) always reports tracks.total
-    as 0 -- a longstanding Spotify API bug -- but the single-playlist
-    endpoint reports it correctly, so the frontend fetches this per tile
-    to fix up the grid's track counts."""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"{API_BASE}/playlists/{playlist_id}",
-            params={"fields": "tracks.total"},
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=aiohttp.ClientTimeout(total=10),
-        ) as resp:
-            if resp.status >= 300:
-                raise RuntimeError(f"get_playlist_track_count failed ({resp.status}): {await resp.text()}")
-            body = await resp.json()
-            return (body.get("tracks") or {}).get("total", 0)
+def playlist_tracks(playlist: dict) -> list[dict]:
+    """A playlist's track objects. Feb 2026 renamed tracks -> items and
+    tracks[].track -> items[].item (the old track key can linger as a
+    boolean), so take whichever is an actual object."""
+    page = playlist.get("items") if isinstance(playlist.get("items"), dict) else playlist.get("tracks") or {}
+    tracks = []
+    for row in page.get("items") or []:
+        row = row or {}
+        track = row.get("item") if isinstance(row.get("item"), dict) else row.get("track")
+        if isinstance(track, dict):
+            tracks.append(track)
+    return tracks
 
 
 async def get_current_user_profile(access_token: str) -> dict | None:
@@ -306,5 +354,5 @@ async def get_current_user_profile(access_token: str) -> dict | None:
             if resp.status == 403:
                 return None
             if resp.status >= 300:
-                raise RuntimeError(f"get_current_user_profile failed ({resp.status}): {await resp.text()}")
+                raise await _error("get_current_user_profile", resp)
             return await resp.json()

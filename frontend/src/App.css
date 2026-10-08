@@ -3,7 +3,7 @@
   --bg: #0a0a0d;
   --panel: #15151b;
   --panel-raised: #1e1e26;
-  --border: #2b2b34;
+  --border: #4a4a58;
   --text: #f4f3f2;
   --muted: #96949f;
   --accent: #ffb238;
@@ -520,6 +520,40 @@ button:disabled {
   position: absolute;
   top: 1.25rem;
   right: 1.25rem;
+  display: flex;
+  gap: 0.25rem;
+}
+
+.invites-btn {
+  position: relative;
+}
+
+.invites-btn .profile-circle-badge {
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  font-size: 0.7rem;
+}
+
+.invite-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.invite-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.invite-url {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
 }
 
 .profile-select-title {
@@ -649,10 +683,11 @@ button:disabled {
   overflow: hidden;
 }
 
+/* Profile left, search centered on the page, actions right. */
 .dashboard-header {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr minmax(0, 720px) 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 1rem;
   padding: 0.9rem 1.5rem;
   border-bottom: 1px solid var(--border);
@@ -660,6 +695,22 @@ button:disabled {
   top: 0;
   background: var(--bg);
   z-index: 10;
+}
+
+.dashboard-header > .settings-btn {
+  justify-self: start;
+}
+
+.dashboard-actions {
+  grid-column: 3;
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.dashboard-actions > button {
+  padding: 0.5rem 0.7rem;
 }
 
 .settings-btn {
@@ -705,8 +756,8 @@ button:disabled {
 
 .search-bar {
   position: relative;
-  flex: 1;
-  max-width: 420px;
+  grid-column: 2;
+  width: 100%;
 }
 
 .search-bar-input {
@@ -715,19 +766,111 @@ button:disabled {
   padding: 0.6rem 1rem;
 }
 
-.search-bar-results {
-  position: absolute;
-  top: calc(100% + 0.4rem);
-  left: 0;
-  right: 0;
+/* Search results + artist/album/playlist views (Browse.jsx) */
+
+.search-results.is-loading {
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.search-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.chip {
+  border-radius: 999px;
+  padding: 0.5rem 0.9rem;
+  min-height: 36px;
   background: var(--panel-raised);
-  border: 1px solid var(--border);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.chip-on {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.album-tile-round .album-art {
+  border-radius: 50%;
+}
+
+.top-result {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  max-width: 420px;
+  margin-bottom: 2rem;
+  padding: 1rem;
   border-radius: 12px;
-  padding: 0.5rem;
-  max-height: 400px;
-  overflow-y: auto;
-  z-index: 20;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  background: var(--panel-raised);
+  color: var(--text);
+  text-align: left;
+}
+
+.top-result-name {
+  flex: 1;
+  font-family: "Space Grotesk", "Inter", sans-serif;
+  font-size: 1.4rem;
+  font-weight: 600;
+}
+
+.show-more {
+  margin-top: 0.5rem;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  min-height: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.link-btn:hover {
+  text-decoration: underline;
+}
+
+.back-btn {
+  margin-bottom: 1rem;
+}
+
+.detail-header {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+
+.detail-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+
+@media (max-width: 640px) {
+  .detail-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
 }
 
 /* Recently played row */
@@ -848,6 +991,23 @@ button:disabled {
 .npb-volume {
   width: 110px;
   accent-color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  /* Phone: profile + actions on one row, search full width under them. */
+  .dashboard-header {
+    grid-template-columns: 1fr auto;
+    padding: 0.75rem 16px;
+  }
+
+  .dashboard-header .search-bar {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .dashboard-actions {
+    grid-column: 2;
+  }
 }
 
 @media (max-width: 860px) {

@@ -1,4 +1,4 @@
-"""Self-check for direct-mode Spotify linking (bot/api.py's
+"""Self-check for direct-mode Web API linking (bot/api.py's
 _spotify_callback + finish-link polling). Run from the repo root:
 `DISCORD_TOKEN=x python bot/test_spotify_callback.py` (no Discord or Spotify
 needed -- the token exchange and stores are stubbed)."""
@@ -23,9 +23,10 @@ from slot_store import SlotMetadata, hash_password  # noqa: E402
 api.API_TOKEN = None
 api.SPOTIFY_DIRECT_CALLBACK = config.SPOTIFY_DIRECT_CALLBACK = True
 config.SPOTIFY_CLIENT_ID = "client"
+config.SPOTIFY_APPS = [("client", None)]
 
 
-async def fake_exchange(code, verifier):
+async def fake_exchange(code, verifier, slot_index):
     assert code == "good-code"
     return {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
 

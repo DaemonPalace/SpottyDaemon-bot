@@ -5,8 +5,11 @@ full architecture rationale.
 """
 
 import asyncio
+import hmac
 import logging
 import os
+import re
+from hashlib import sha256
 
 from aiohttp import web
 
@@ -14,7 +17,20 @@ import admin_store
 import auth
 import env_file
 import proxy
-from config import FRONTEND_DIST_DIR, SUPERVISOR_HOST, SUPERVISOR_PORT
+from config import (
+    AUTOSTART_BOT,
+    AWS_REGION,
+    ECS_CLUSTER,
+    ECS_SERVICE,
+    FRONTEND_DIST_DIR,
+    INTERACTIONS_ENDPOINT_URL,
+    LOCKED_SETTINGS,
+    SETUP_TOKEN_SHA256,
+    SUPERVISOR_HOST,
+    SUPERVISOR_PORT,
+    TENANT_ID,
+    TENANTS_TABLE,
+)
 from process_manager import STATUS_NOT_CONFIGURED, BotProcessManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -36,6 +52,8 @@ SETTINGS_FIELDS = [
     ("IDLE_SHUTDOWN_MINUTES", False),
     ("ENABLE_AUTO_SHUTDOWN", False),
 ]
+# Minus whatever the hosted platform manages itself (config.LOCKED_SETTINGS).
+EDITABLE_SETTINGS = [(key, secret) for key, secret in SETTINGS_FIELDS if key not in LOCKED_SETTINGS]
 # Changing these needs the bot process restarted to take effect (env vars
 # are only read at bot/main.py's startup import time).
 RESTART_ON_CHANGE = {
@@ -62,19 +80,49 @@ async def _status(request: web.Request) -> web.Response:
         state = STATUS_NOT_CONFIGURED
     else:
         state = await bot_process.status()
-    return web.json_response({"state": state})
+    # Hosted only: the URL the setup page and admin settings show for the
+    # Discord developer portal. Not a secret: Discord checks every request's
+    # signature against the app's public key.
+    return web.json_response({"state": state, "interactions_endpoint_url": INTERACTIONS_ENDPOINT_URL or None})
+
+
+async def _save_discord_public_key(key: str) -> None:
+    """Hosted only: the interactions Lambda checks Discord's signatures
+    against this (the app's General Information page). The bot also saves it
+    itself on startup (bot/interaction_relay.py's register_endpoint)."""
+    import boto3
+
+    table = boto3.resource("dynamodb", region_name=AWS_REGION).Table(TENANTS_TABLE)
+    await asyncio.to_thread(
+        table.update_item,
+        Key={"tenant": TENANT_ID},
+        UpdateExpression="SET discord_public_key = :k",
+        ConditionExpression="attribute_exists(tenant)",
+        ExpressionAttributeValues={":k": key},
+    )
 
 
 async def _setup(request: web.Request) -> web.Response:
     if admin_store.is_configured():
         raise web.HTTPBadRequest(text="already set up -- use the login screen")
     body = await request.json()
+    if SETUP_TOKEN_SHA256:
+        given = sha256(str(body.get("setup_token", "")).encode()).hexdigest()
+        if not hmac.compare_digest(given, SETUP_TOKEN_SHA256):
+            raise web.HTTPForbidden(text="Open this page from the setup link in your welcome email.")
     discord_token = body.get("discord_token", "").strip()
     admin_password = body.get("admin_password", "")
     if not discord_token:
         raise web.HTTPBadRequest(text="discord_token is required")
     if len(admin_password) < 8:
         raise web.HTTPBadRequest(text="admin_password must be at least 8 characters")
+    if INTERACTIONS_ENDPOINT_URL and TENANTS_TABLE and TENANT_ID:
+        public_key = str(body.get("discord_public_key", "")).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", public_key):
+            raise web.HTTPBadRequest(
+                text="The public key is 64 letters and numbers, from your app's General Information page."
+            )
+        await _save_discord_public_key(public_key)
 
     values = {"DISCORD_TOKEN": discord_token}
     existing = env_file.read_env()
@@ -92,6 +140,8 @@ async def _setup(request: web.Request) -> web.Response:
 async def _login(request: web.Request) -> web.Response:
     body = await request.json()
     password = body.get("password", "")
+    if admin_store.is_locked():
+        raise web.HTTPTooManyRequests(text="Too many wrong passwords -- try again in 15 minutes.")
     if not admin_store.verify_password(password):
         raise web.HTTPUnauthorized(text="wrong password")
     response = web.json_response({"logged_in": True})
@@ -109,18 +159,47 @@ async def _get_settings(request: web.Request) -> web.Response:
     current = env_file.read_env()
     fields = {
         key: {"value": "" if secret else current.get(key, ""), "isSet": bool(current.get(key))}
-        for key, secret in SETTINGS_FIELDS
+        for key, secret in EDITABLE_SETTINGS
     }
+    fields["SPOTIFY_APPS"] = {"value": [{"clientId": cid, "secretSet": bool(sec)} for cid, sec in _spotify_apps(current)]}
     return web.json_response(fields)
+
+
+def _spotify_apps(env: dict[str, str]) -> list[tuple[str, str]]:
+    """SPOTIFY_CLIENT_ID/SECRET as the (id, secret) pairs bot/config.py's
+    SPOTIFY_APPS reads them back as -- comma-separated, secrets positional."""
+    ids = env.get("SPOTIFY_CLIENT_ID", "").split(",")
+    secret_list = env.get("SPOTIFY_CLIENT_SECRET", "").split(",")
+    return [(cid.strip(), (secret_list[i] if i < len(secret_list) else "").strip()) for i, cid in enumerate(ids) if cid.strip()]
+
+
+def _spotify_app_values(apps: list[dict], env: dict[str, str]) -> dict[str, str]:
+    """The settings screen's app list, back to .env values. A blank secret
+    keeps whatever secret that client id already had, so masked secrets
+    round-trip without ever being sent to the browser."""
+    old = dict(_spotify_apps(env))
+    pairs = [
+        (cid, str(app.get("secret") or "").strip() or old.get(cid, ""))
+        for app in apps
+        if (cid := str(app.get("clientId") or "").strip())
+    ]
+    if any("," in cid + sec for cid, sec in pairs):
+        raise web.HTTPBadRequest(text="client ids and secrets can't contain commas")
+    return {
+        "SPOTIFY_CLIENT_ID": ",".join(cid for cid, _ in pairs),
+        "SPOTIFY_CLIENT_SECRET": ",".join(sec for _, sec in pairs),
+    }
 
 
 async def _update_settings(request: web.Request) -> web.Response:
     body = await request.json()
-    allowed = {key for key, _ in SETTINGS_FIELDS}
+    allowed = {key for key, _ in EDITABLE_SETTINGS}
     # Blank means "leave as-is" (how a masked secret field round-trips
     # without ever having its real value sent back to the browser) --
     # never used to clear a value.
     values = {k: str(v) for k, v in body.items() if k in allowed and str(v).strip() != ""}
+    if isinstance(body.get("SPOTIFY_APPS"), list):
+        values.update(_spotify_app_values(body["SPOTIFY_APPS"], env_file.read_env()))
     if not values:
         return web.json_response({"updated": [], "restarted": False})
 
@@ -145,7 +224,11 @@ async def _change_admin_password(request: web.Request) -> web.Response:
     # _is_admin_gated), which only exists because /login already verified
     # it moments ago. Same trust level SlotList.jsx's delete-confirm uses.
     admin_store.set_password(new_password)
-    return web.json_response({"changed": True})
+    # set_password rotated the session secret, logging out every other
+    # session -- re-sign this one so the admin who just changed it stays in.
+    response = web.json_response({"changed": True})
+    auth.issue_cookie(request, response)
+    return response
 
 
 async def _logs(request: web.Request) -> web.Response:
@@ -165,6 +248,21 @@ async def _bot_stop(request: web.Request) -> web.Response:
 async def _bot_restart(request: web.Request) -> web.Response:
     await bot_process.restart()
     return web.json_response({"status": "starting"})
+
+
+async def _update(request: web.Request) -> web.Response:
+    """Hosted only: restart this bot on a new ECS deployment, which pulls
+    whatever its image tag (:latest) points at now. The dashboard offers it
+    when GET /_platform/update (the platform Lambda) says there's a newer
+    image. About a minute of downtime; the task running this request is
+    stopped once the new one is up."""
+    if not (ECS_CLUSTER and ECS_SERVICE):
+        raise web.HTTPNotFound(text="updates are only available on the hosted platform")
+    import boto3
+
+    client = boto3.client("ecs", region_name=AWS_REGION)
+    await asyncio.to_thread(client.update_service, cluster=ECS_CLUSTER, service=ECS_SERVICE, forceNewDeployment=True)
+    return web.json_response({"status": "updating"})
 
 
 async def _spa_fallback(request: web.Request) -> web.Response:
@@ -197,6 +295,7 @@ def build_app() -> web.Application:
     app.router.add_post("/api/supervisor/bot/start", _bot_start)
     app.router.add_post("/api/supervisor/bot/stop", _bot_stop)
     app.router.add_post("/api/supervisor/bot/restart", _bot_restart)
+    app.router.add_post("/api/supervisor/update", _update)
 
     # Catch-all: everything else under /api/* is proxied straight through to
     # bot/api.py. auth.session_middleware gates the admin-only routes; the
@@ -212,6 +311,8 @@ def build_app() -> web.Application:
 
 async def _main() -> None:
     await bot_process.attach_if_running()
+    if AUTOSTART_BOT and admin_store.is_configured():
+        bot_process.start()
     app = build_app()
     runner = web.AppRunner(app)
     await runner.setup()

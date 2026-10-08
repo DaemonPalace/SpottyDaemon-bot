@@ -30,8 +30,14 @@ async function request(method, path, body) {
 
 // Supervisor
 export const getStatus = () => request("GET", "/api/supervisor/status");
-export const submitSetup = (discord_token, admin_password) =>
-  request("POST", "/api/supervisor/setup", { discord_token, admin_password });
+// Hosted platform only: CloudFront sends this to the platform's wake Lambda.
+export const wakeBot = () => request("POST", "/_platform/wake");
+// Hosted only: whether a newer image is out (the platform Lambda), and
+// installing it (admin session; restarts the bot on a new ECS deployment).
+export const getUpdateStatus = () => request("GET", "/_platform/update");
+export const updateBot = () => request("POST", "/api/supervisor/update");
+export const submitSetup = (discord_token, admin_password, setup_token, discord_public_key) =>
+  request("POST", "/api/supervisor/setup", { discord_token, admin_password, setup_token, discord_public_key });
 export const login = (password) => request("POST", "/api/supervisor/login", { password });
 export const logout = () => request("POST", "/api/supervisor/logout");
 export const getLogs = () => request("GET", "/api/supervisor/logs");
@@ -45,7 +51,7 @@ export const changeAdminPassword = (newPassword) =>
 // Slots (open to the dashboard; deleteSlot is the one route that needs the
 // admin session cookie -- see supervisor/auth.py's _is_admin_gated)
 export const listSlots = () => request("GET", "/api/slots");
-export const startLink = (slot_name, password) => request("POST", "/api/slots/link/start", { slot_name, password });
+export const startLink = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/link/start`, {});
 export const finishLink = (user_id, pasted_url) => request("POST", "/api/slots/link/finish", { user_id, pasted_url });
 export const selectSlot = (name, password) => request("POST", `/api/slots/${encodeURIComponent(name)}/select`, { password });
 export const getJamSlot = (token) => request("GET", `/api/jam/${encodeURIComponent(token)}`);
@@ -61,6 +67,14 @@ export const updateSlotSettings = (name, { currentPassword, newName, newPassword
     avatar_url: avatarUrl,
   });
 
+// Invites: admin creates/reviews (admin session), invitee signs up (public)
+export const listInvites = () => request("GET", "/api/invites");
+export const createInvite = () => request("POST", "/api/invites", {});
+export const approveInvite = (index) => request("POST", `/api/invites/${index}/approve`, {});
+export const denyInvite = (index) => request("POST", `/api/invites/${index}/deny`, {});
+export const checkInvite = (token) => request("GET", `/api/invite/${encodeURIComponent(token)}`);
+export const registerInvite = (token, body) => request("POST", `/api/invite/${encodeURIComponent(token)}`, body);
+
 // Player (by slot name) -- now-playing + queue in one request, see
 // bot/api.py's _player_state
 export const getPlayerState = (name) => request("GET", `/api/slots/${encodeURIComponent(name)}/player-state`);
@@ -71,8 +85,18 @@ export const removeUpNext = (name, id) =>
   request("POST", `/api/slots/${encodeURIComponent(name)}/up-next/remove`, { id });
 export const playTrack = (name, uri) =>
   request("POST", `/api/slots/${encodeURIComponent(name)}/player/play-track`, { uri });
-export const searchTracks = (name, q) =>
-  request("GET", `/api/slots/${encodeURIComponent(name)}/search?q=${encodeURIComponent(q)}`);
+// type: comma list of track/artist/album/playlist (server default: all four).
+export const searchSpotify = (name, q, type, offset = 0) =>
+  request(
+    "GET",
+    `/api/slots/${encodeURIComponent(name)}/search?${new URLSearchParams({ q, offset, ...(type && { type }) })}`
+  );
+export const getArtist = (name, artistId) =>
+  request("GET", `/api/slots/${encodeURIComponent(name)}/artists/${encodeURIComponent(artistId)}`);
+export const queueAlbum = (name, albumId) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/albums/${encodeURIComponent(albumId)}/queue-all`, {});
+export const playContext = (name, uri) =>
+  request("POST", `/api/slots/${encodeURIComponent(name)}/player/play-context`, { uri });
 export const playPlayback = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/player/play`, {});
 export const pausePlayback = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/player/pause`, {});
 export const nextTrack = (name) => request("POST", `/api/slots/${encodeURIComponent(name)}/player/next`, {});
@@ -91,8 +115,6 @@ export const getRecentlyPlayed = (name) => request("GET", `/api/slots/${encodeUR
 export const getPlaylists = (name) => request("GET", `/api/slots/${encodeURIComponent(name)}/playlists`);
 export const getPlaylist = (name, playlistId) =>
   request("GET", `/api/slots/${encodeURIComponent(name)}/playlists/${encodeURIComponent(playlistId)}`);
-export const getPlaylistTrackCount = (name, playlistId) =>
-  request("GET", `/api/slots/${encodeURIComponent(name)}/playlists/${encodeURIComponent(playlistId)}/track-count`);
 export const playPlaylist = (name, playlistId) =>
   request("POST", `/api/slots/${encodeURIComponent(name)}/playlists/${encodeURIComponent(playlistId)}/play`, {});
 export const queuePlaylist = (name, playlistId) =>

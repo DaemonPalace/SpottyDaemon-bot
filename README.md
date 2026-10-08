@@ -260,17 +260,19 @@ for any of this.
 4. Paste the Function URL it prints into the Discord app's "Interactions Endpoint URL" field. Discord's auth type NONE is intentional — Discord itself can't sign AWS SigV4, so the Ed25519 signature check inside the handler is what actually authenticates requests.
 5. All slash commands (`/wake`, `/sleep`, `/connect`, `/disconnect`, `/link`, `/link-finish`, `/delete-slot`) are registered together by the bot itself on startup (`tree.sync()` in `main.py`) — command *registration* is unaffected by the gateway/webhook split above, only interaction *delivery* is. They have to be registered together: Discord's bulk-overwrite endpoint replaces the *entire* global command set on every call, so registering a subset from anywhere else (a separate script, a second `tree.sync()` with a different command list) silently deletes the rest. Global commands can take up to an hour to show up in a server after the bot's first startup.
 
-## Self-serve Spotify linking
+## Invites and Spotify linking
 
-1. A friend runs `/link <slotname>` (lowercase letters/numbers/hyphens, e.g. `alices-jams`) and sets a password in the popup that appears.
-2. The bot replies (ephemerally) with a Spotify login link and instructions. They log in with the Spotify account they want to use.
-3. After logging in, Spotify redirects their browser to `http://127.0.0.1:<port>/...`. If the bot is running on a different machine than their browser (the normal case for a friend linking their own account), this fails to load — that's expected, `127.0.0.1` means *their* machine, not the bot's — and the failed url in the address bar is what librespot needs. If the bot happens to be running on the *same* machine as the browser (e.g. testing locally on your own box), the page loads and completes on its own, no url to copy.
-4. Run `/link-finish` within `LINK_TIMEOUT_SECONDS` (default 15 min) to complete linking — paste the failed url in if you had to copy one, or leave it blank if the page loaded fine.
-5. Once linked, anyone can `/connect <slotname>` and enter the slot's password in the popup to start streaming it.
+Profiles are invite-only, since a development-mode Spotify app only lets
+allowlisted accounts in:
 
-This works without exposing any port on the server: librespot's own
-OAuth client only accepts loopback redirect URIs, so there's no way to make
-Spotify redirect a remote browser straight back to a public address anyway.
+1. In the dashboard, the ✉ button next to admin settings opens **Invites** (admin password). **Create invite link** reserves a slot and gives a one-time `/invite/<token>` link to send to one person.
+2. They open it, pick a profile name + password, and enter the full name and email of their Spotify account. The profile is now waiting for approval (the ✉ button shows a count).
+3. Add that name + email to the Spotify app the Invites screen names (developer.spotify.com → the app → User Management), then **Approve** — or **Deny**, which frees the slot.
+4. Next time they log in to their profile, they're asked to link Spotify (Discord's `/link <profile>` + password does the same). The player login goes through librespot's own client, so they paste the failed `127.0.0.1` url back (a token from your own app signs librespot in but Spotify denies its Connect device: `INVALID_CREDENTIALS`). Then the dashboard asks for a second, Web API login; with `PUBLIC_DASHBOARD_URL` set that one redirects back to the bot's callback on its own.
+5. Once linked, anyone can `/connect <profile>` with its password.
+
+The no-domain fallback works without exposing any port on the server: librespot's own
+OAuth client only accepts loopback redirect URIs.
 `--enable-oauth` runs a real local HTTP server on `127.0.0.1:<port>`, actively
 waiting for that exact callback request — since the bot process runs on the
 same box, it just re-issues that request to itself using the query string
@@ -318,6 +320,12 @@ Spotify app, same paste-the-failed-redirect UX as `/link-finish`. Requires
 developer.spotify.com and add `SPOTIFY_WEB_API_REDIRECT_URI` (default
 `http://127.0.0.1:5589/callback`) as a redirect URI there. See
 `bot/spotify_web_api.py`.
+
+A development-mode app only serves users on its User Management allowlist,
+so for more users register several apps and comma-separate them:
+`SPOTIFY_CLIENT_ID=id1,id2` (secrets in the same order). Slots 1–5 use the
+first app, 6–10 the second (`SPOTIFY_USERS_PER_APP`, default 5); raise
+`MAX_SLOTS` to match and add each slot's user to its own app's allowlist.
 
 ## Diagnostics API
 

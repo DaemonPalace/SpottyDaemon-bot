@@ -21,7 +21,7 @@ from commands import (
 from config import DEV_GUILD_ID, DISCORD_TOKEN, HOST_CONTROLLER, INTERACTIONS_QUEUE_URL, SLOTS, SPOTIFY_DIRECT_CALLBACK
 from host_control import build_host_controller
 from idle_monitor import IdleMonitor
-from interaction_relay import InteractionRelay
+from interaction_relay import InteractionRelay, register_endpoint
 from jam import JamManager
 from librespot_manager import LibrespotManager
 from slot_store import SlotStore
@@ -109,15 +109,18 @@ class LinkStartView(discord.ui.View):
     swapped for a disabled hint instead; the plain fallback_command still
     works either way (interaction_relay.py handles it directly).
 
-    In direct mode (SPOTIFY_DIRECT_CALLBACK) there's nothing to paste --
-    Spotify redirects to the bot's own callback -- so just the login button."""
+    direct=True (the Web API link with SPOTIFY_DIRECT_CALLBACK) has nothing
+    to paste -- Spotify redirects to the bot's own callback -- so just the
+    login button. The player link always pastes back, see spotify_link.py."""
 
-    def __init__(self, authorize_url: str, modal_title: str, on_finish_callback, fallback_command: str):
+    def __init__(
+        self, authorize_url: str, modal_title: str, on_finish_callback, fallback_command: str, direct: bool = False
+    ):
         super().__init__(timeout=900)
         self.add_item(
             discord.ui.Button(label="Log in with Spotify", style=discord.ButtonStyle.link, url=authorize_url)
         )
-        if SPOTIFY_DIRECT_CALLBACK:
+        if direct:
             return
         if INTERACTIONS_QUEUE_URL:
             self.add_item(
@@ -151,7 +154,7 @@ async def connect(interaction: discord.Interaction, slot: str):
     async def handle_submit(modal_interaction: discord.Interaction, password: str):
         await modal_interaction.response.defer(ephemeral=True)
         content, ephemeral = await do_connect(
-            guild, member, slot, password, librespot, slot_store, interaction.channel_id
+            guild, member, slot, password, librespot, slot_store, web_api_link_manager, interaction.channel_id
         )
         await modal_interaction.followup.send(content, ephemeral=ephemeral)
         if not ephemeral:
@@ -174,7 +177,7 @@ async def reconnect(interaction: discord.Interaction, slot: str):
     async def handle_submit(modal_interaction: discord.Interaction, password: str):
         await modal_interaction.response.defer(ephemeral=True)
         content, ephemeral = await do_reconnect(
-            guild, member, slot, password, librespot, slot_store, interaction.channel_id
+            guild, member, slot, password, librespot, slot_store, web_api_link_manager, interaction.channel_id
         )
         await modal_interaction.followup.send(content, ephemeral=ephemeral)
 
@@ -256,8 +259,8 @@ async def play(interaction: discord.Interaction, query: str):
     await interaction.followup.send(view=TrackResultsView(interaction.guild.id, results), ephemeral=True)
 
 
-@tree.command(name="link", description="Claim a free Spotify slot and link your own Spotify account")
-@app_commands.describe(slotname="Name for this slot, e.g. your username (lowercase, no spaces)")
+@tree.command(name="link", description="Link Spotify for your approved profile (from a dashboard invite)")
+@app_commands.describe(slotname="Your profile name")
 async def link(interaction: discord.Interaction, slotname: str):
     user_id = str(interaction.user.id)
 
@@ -276,7 +279,7 @@ async def link(interaction: discord.Interaction, slotname: str):
         else:
             await modal_interaction.followup.send(content, ephemeral=ephemeral)
 
-    await interaction.response.send_modal(PasswordModal(f"Set a password for '{slotname}'", handle_submit))
+    await interaction.response.send_modal(PasswordModal(f"Password for '{slotname}'", handle_submit))
 
 
 @tree.command(name="link-finish", description="Finish /link (paste the url your browser failed to load, or leave blank if it loaded fine)")
@@ -309,7 +312,11 @@ async def link_web_api(interaction: discord.Interaction, slotname: str):
             await modal_interaction.followup.send(content2, ephemeral=ephemeral2)
 
         view = LinkStartView(
-            authorize_url, f"Finish Web API link for '{slotname}'", handle_finish, "/link-web-api-finish"
+            authorize_url,
+            f"Finish Web API link for '{slotname}'",
+            handle_finish,
+            "/link-web-api-finish",
+            direct=SPOTIFY_DIRECT_CALLBACK,
         )
         await interaction.response.send_message(content, view=view, ephemeral=ephemeral)
     else:
@@ -370,6 +377,7 @@ async def on_ready():
     else:
         await tree.sync()
     idle_monitor.start()
+    await register_endpoint(client)
     if interaction_relay is not None:
         interaction_relay.start()
     link_manager.start()

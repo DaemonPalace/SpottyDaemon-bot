@@ -100,6 +100,10 @@ class LibrespotProcess:
         self.slot = slot
         self._proc: asyncio.subprocess.Process | None = None
         self._drain_fd: int | None = None
+        # Write end we never write to -- held only so the FIFO always has a
+        # writer. librespot's pipe sink closes its end on every pause, and
+        # without another writer that's EOF for ffmpeg, ending playback.
+        self._keepalive_fd: int | None = None
         self._drain_task: asyncio.Task | None = None
         self._monitor_task: asyncio.Task | None = None
         self._draining = True
@@ -131,6 +135,7 @@ class LibrespotProcess:
             "--bitrate", "320",
             "--disable-audio-cache",
             "--initial-volume", "100",
+            "--volume-ctrl", "linear",
             env=env,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.PIPE,
@@ -165,6 +170,8 @@ class LibrespotProcess:
             fcntl.fcntl(self._drain_fd, fcntl.F_SETPIPE_SZ, _PIPE_BUFFER_SIZE_BYTES)
         except OSError:
             log.warning("could not shrink pipe buffer for slot %s, using kernel default", self.slot.name)
+        # Needs the read end above to exist first, or O_NONBLOCK open fails with ENXIO.
+        self._keepalive_fd = os.open(self.slot.pipe_path, os.O_WRONLY | os.O_NONBLOCK)
         self._drain_task = asyncio.create_task(self._drain_loop())
         self._monitor_task = asyncio.create_task(self._monitor_loop())
 
@@ -285,6 +292,9 @@ class LibrespotProcess:
         if self._monitor_task is not None:
             self._monitor_task.cancel()
             self._monitor_task = None
+        if self._keepalive_fd is not None:
+            os.close(self._keepalive_fd)
+            self._keepalive_fd = None
         if self._drain_fd is not None:
             os.close(self._drain_fd)
             self._drain_fd = None

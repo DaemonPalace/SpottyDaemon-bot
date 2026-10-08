@@ -22,10 +22,12 @@ from config import ADMIN_STORE_PATH
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot"))
 _saved_supervisor_config = sys.modules.pop("config", None)
 try:
-    from slot_store import hash_password, verify_password_hash  # noqa: E402
+    from slot_store import FailureLimiter, hash_password, verify_password_hash  # noqa: E402
 finally:
     if _saved_supervisor_config is not None:
         sys.modules["config"] = _saved_supervisor_config
+
+_login_limiter = FailureLimiter()
 
 
 def is_configured() -> bool:
@@ -46,19 +48,24 @@ def _save(data: dict) -> None:
 
 
 def set_password(password: str) -> None:
-    """Called once during first-run setup. Generates the session secret at
-    the same time if this is the very first setup."""
+    """First-run setup, a password change, or `spottydaemon passwd`. Always
+    generates a fresh session secret too, so a new password logs out every
+    existing admin session (auth.py signs cookies with it) -- the point of
+    changing it after a leak."""
     data = _load() if is_configured() else {}
     data["password_hash"] = hash_password(password)
-    if "session_secret" not in data:
-        data["session_secret"] = secrets.token_hex(32)
+    data["session_secret"] = secrets.token_hex(32)
     _save(data)
 
 
 def verify_password(password: str) -> bool:
     if not is_configured():
         return False
-    return verify_password_hash(password, _load()["password_hash"])
+    return _login_limiter.attempt("admin", lambda: verify_password_hash(password, _load()["password_hash"]))
+
+
+def is_locked() -> bool:
+    return _login_limiter.locked("admin")
 
 
 def get_session_secret() -> str:

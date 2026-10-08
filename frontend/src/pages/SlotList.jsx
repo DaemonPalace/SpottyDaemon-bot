@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { deleteSlot, listSlots, login, startBot } from "../api/client";
+import { deleteSlot, getUpdateStatus, listInvites, listSlots, login, startBot, updateBot } from "../api/client";
 import AdminSettingsModal from "../components/AdminSettingsModal";
-import CreateProfileModal from "../components/CreateProfileModal";
+import InvitesModal from "../components/InvitesModal";
 import PasswordPromptModal from "../components/PasswordPromptModal";
 import ProfileCircle from "../components/ProfileCircle";
 import { useSupervisorStatus } from "../hooks/useSupervisorStatus";
 
-function DeleteConfirmModal({ name, onClose, onDeleted }) {
+/** Re-confirms the admin password, then runs `action` (deleting a slot,
+ * installing an update). */
+function AdminConfirmModal({ title, note, confirmLabel, busyLabel, danger, action, onClose, onDone }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -18,8 +20,8 @@ function DeleteConfirmModal({ name, onClose, onDeleted }) {
     setBusy(true);
     try {
       await login(password); // re-confirms the admin password before a destructive action
-      await deleteSlot(name);
-      onDeleted();
+      await action();
+      onDone();
     } catch (err) {
       setError(err.message);
       setBusy(false);
@@ -30,11 +32,12 @@ function DeleteConfirmModal({ name, onClose, onDeleted }) {
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="modal-card" onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>Delete "{name}"?</h2>
+          <h2>{title}</h2>
           <button type="button" className="modal-close" onClick={onClose} aria-label="Close">✕</button>
         </div>
         <div className="modal-body">
           <form onSubmit={handleSubmit} className="form">
+            {note && <p className="hint">{note}</p>}
             <label>
               Admin password to confirm
               <input
@@ -46,8 +49,8 @@ function DeleteConfirmModal({ name, onClose, onDeleted }) {
               />
             </label>
             {error && <p className="error">{error}</p>}
-            <button type="submit" className="danger" disabled={busy}>
-              {busy ? "Deleting..." : "Confirm delete"}
+            <button type="submit" className={danger ? "danger" : undefined} disabled={busy}>
+              {busy ? busyLabel : confirmLabel}
             </button>
           </form>
         </div>
@@ -63,10 +66,22 @@ export default function SlotList() {
   const [starting, setStarting] = useState(false);
   const [managing, setManaging] = useState(false);
   const [unlocking, setUnlocking] = useState(null); // slot name, or null
-  const [creating, setCreating] = useState(false);
+  const [showInvites, setShowInvites] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
   const [deleting, setDeleting] = useState(null); // slot name, or null
   const [showAdminSettings, setShowAdminSettings] = useState(false);
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  const [confirmingUpdate, setConfirmingUpdate] = useState(false);
+  const [updating, setUpdating] = useState(false);
   const navigate = useNavigate();
+
+  // Hosted only; a self-hosted dashboard has no /_platform and just never
+  // shows the banner.
+  useEffect(() => {
+    getUpdateStatus()
+      .then((data) => setUpdateAvailable(Boolean(data?.update_available)))
+      .catch(() => {});
+  }, []);
 
   async function refresh() {
     try {
@@ -76,6 +91,10 @@ export default function SlotList() {
     } catch (err) {
       setError(err.message);
     }
+    // Admin-only: just no badge without an admin session.
+    listInvites()
+      .then((data) => setPendingCount(data.invites.filter((i) => i.state === "pending").length))
+      .catch(() => {});
   }
 
   async function handleStartBot() {
@@ -108,22 +127,45 @@ export default function SlotList() {
     );
   }
 
-  const claimed = slots.filter((s) => s.state === "claimed");
-  const hasFreeSlot = slots.some((s) => s.state === "free");
+  // Approved invitees show up too -- logging in takes them to linking.
+  const claimed = slots.filter((s) => ["claimed", "approved", "linking"].includes(s.state));
 
   return (
     <div className="profile-select">
-      <button
-        type="button"
-        className="ghost icon-btn profile-admin-btn"
-        onClick={() => setShowAdminSettings(true)}
-        aria-label="Admin settings"
-        title="Admin settings"
-      >
-        ⚙
-      </button>
+      <div className="profile-admin-btn">
+        <button
+          type="button"
+          className="ghost icon-btn invites-btn"
+          onClick={() => setShowInvites(true)}
+          aria-label="Invites"
+          title="Invites"
+        >
+          ✉{pendingCount > 0 && <span className="profile-circle-badge">{pendingCount}</span>}
+        </button>
+        <button
+          type="button"
+          className="ghost icon-btn"
+          onClick={() => setShowAdminSettings(true)}
+          aria-label="Admin settings"
+          title="Admin settings"
+        >
+          ⚙
+        </button>
+      </div>
       <h1 className="profile-select-title">Who's playing?</h1>
       {error && <p className="error">{error}</p>}
+      {updating ? (
+        <p className="hint">Updating... the dashboard comes back on its own in about a minute.</p>
+      ) : (
+        updateAvailable && (
+          <p className="hint">
+            A new version of the bot is out.{" "}
+            <button type="button" className="ghost" onClick={() => setConfirmingUpdate(true)}>
+              Update now
+            </button>
+          </p>
+        )
+      )}
 
       <div className="profile-grid">
         {claimed.map((slot) => (
@@ -140,12 +182,7 @@ export default function SlotList() {
           </div>
         ))}
 
-        {!managing && hasFreeSlot && (
-          <div className="profile-item">
-            <ProfileCircle name="+" onClick={() => setCreating(true)} size="lg" />
-            <span className="profile-item-name">Add profile</span>
-          </div>
-        )}
+        {claimed.length === 0 && <p className="hint">No profiles yet -- send an invite with ✉.</p>}
       </div>
 
       {claimed.length > 0 && (
@@ -162,23 +199,34 @@ export default function SlotList() {
         />
       )}
 
-      {creating && (
-        <CreateProfileModal
-          onClose={() => setCreating(false)}
-          onCreated={() => {
-            setCreating(false);
+      {showInvites && <InvitesModal onClose={() => setShowInvites(false)} onChanged={refresh} />}
+
+      {deleting && (
+        <AdminConfirmModal
+          title={`Delete "${deleting}"?`}
+          confirmLabel="Confirm delete"
+          busyLabel="Deleting..."
+          danger
+          action={() => deleteSlot(deleting)}
+          onClose={() => setDeleting(null)}
+          onDone={() => {
+            setDeleting(null);
             refresh();
           }}
         />
       )}
 
-      {deleting && (
-        <DeleteConfirmModal
-          name={deleting}
-          onClose={() => setDeleting(null)}
-          onDeleted={() => {
-            setDeleting(null);
-            refresh();
+      {confirmingUpdate && (
+        <AdminConfirmModal
+          title="Update the bot?"
+          note="It restarts on the new version: anyone listening loses the music for about a minute, then reconnects with /connect."
+          confirmLabel="Update now"
+          busyLabel="Updating..."
+          action={updateBot}
+          onClose={() => setConfirmingUpdate(false)}
+          onDone={() => {
+            setConfirmingUpdate(false);
+            setUpdating(true);
           }}
         />
       )}

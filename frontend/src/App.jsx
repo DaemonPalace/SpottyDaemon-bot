@@ -1,6 +1,8 @@
 import { Navigate, Route, BrowserRouter as Router, Routes } from "react-router-dom";
 import "./App.css";
 import { useSupervisorStatus } from "./hooks/useSupervisorStatus";
+import Asleep from "./pages/Asleep";
+import InvitePage from "./pages/InvitePage";
 import SetupWizard from "./pages/SetupWizard";
 import SlotList from "./pages/SlotList";
 import SlotProfile from "./pages/SlotProfile";
@@ -17,6 +19,10 @@ function RootRedirect() {
 }
 
 export default function App() {
+  const { state } = useSupervisorStatus();
+  // Hosted bot asleep: every page needs the bot, so show the wake screen
+  // instead; the normal routes come back once the status call answers.
+  if (state === "asleep") return <Asleep />;
   return (
     <Router>
       <Routes>
@@ -25,6 +31,7 @@ export default function App() {
         <Route path="/slots" element={<SlotList />} />
         <Route path="/slots/:name" element={<SlotProfile />} />
         <Route path="/jam/:jamToken" element={<SlotProfile />} />
+        <Route path="/invite/:token" element={<InvitePage />} />
         <Route path="/" element={<RootRedirect />} />
         <Route path="*" element={<RootRedirect />} />
       </Routes>

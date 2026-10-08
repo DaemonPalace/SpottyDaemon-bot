@@ -55,7 +55,14 @@ from commands import (
     do_search_tracks,
     resolve_jam_slot,
 )
-from config import AWS_REGION, INTERACTIONS_QUEUE_URL, SPOTIFY_DIRECT_CALLBACK
+from config import (
+    AWS_REGION,
+    INTERACTIONS_ENDPOINT_URL,
+    INTERACTIONS_QUEUE_URL,
+    SPOTIFY_DIRECT_CALLBACK,
+    TENANT_ID,
+    TENANTS_TABLE,
+)
 from jam import JamManager
 from librespot_manager import LibrespotManager
 from slot_store import SlotStore
@@ -64,6 +71,34 @@ from spotify_web_api import WebApiLinkManager
 from up_next import UpNextManager
 
 log = logging.getLogger("interaction_relay")
+
+
+async def register_endpoint(client: discord.Client) -> None:
+    """Hosted platform: point this bot's Discord app at the platform Lambda.
+    Saves the app's public key to the tenant's row first, since Discord
+    checks the new URL with a signed PING before accepting it. Runs on every
+    startup, so a changed bot token (another app) re-registers too. Never
+    raises: a bot without the endpoint still works over the gateway, minus
+    /wake while asleep."""
+    if not (INTERACTIONS_ENDPOINT_URL and TENANTS_TABLE and TENANT_ID):
+        return
+    try:
+        import boto3
+
+        app = await client.application_info()
+        table = boto3.resource("dynamodb", region_name=AWS_REGION).Table(TENANTS_TABLE)
+        await asyncio.to_thread(
+            table.update_item,
+            Key={"tenant": TENANT_ID},
+            UpdateExpression="SET discord_public_key = :k",
+            ConditionExpression="attribute_exists(tenant)",
+            ExpressionAttributeValues={":k": app.verify_key},
+        )
+        if app.interactions_endpoint_url != INTERACTIONS_ENDPOINT_URL:
+            await app.edit(interactions_endpoint_url=INTERACTIONS_ENDPOINT_URL)
+            log.info("set the Discord app's Interactions Endpoint URL to %s", INTERACTIONS_ENDPOINT_URL)
+    except Exception:
+        log.exception("couldn't register the Interactions Endpoint URL; /wake won't work while asleep")
 
 DISCORD_API = "https://discord.com/api/v10"
 EPHEMERAL = 64
@@ -85,10 +120,11 @@ def _link_start_components(authorize_url: str, paste_flow: str) -> list[dict]:
     interaction generated -- safe to send with no live Interaction behind
     it) plus a "Paste redirect URL" button whose click Lambda answers with
     a MODAL directly (custom_id "paste-finish:<paste_flow>" once
-    submitted, see this module's docstring). Direct mode drops the paste
-    button -- Spotify redirects to the bot's own callback instead."""
+    submitted, see this module's docstring). A direct-mode Web API link
+    drops the paste button -- Spotify redirects to the bot's own callback
+    instead. The player link ("link") always pastes, see spotify_link.py."""
     buttons = [{"type": 2, "style": 5, "label": "Log in with Spotify", "url": authorize_url}]
-    if not SPOTIFY_DIRECT_CALLBACK:
+    if not (SPOTIFY_DIRECT_CALLBACK and paste_flow == "link-web-api"):
         buttons.append({"type": 2, "style": 1, "label": "Paste redirect URL", "custom_id": f"paste:{paste_flow}"})
     return [{"type": 1, "components": buttons}]
 
@@ -294,7 +330,7 @@ class InteractionRelay:
 
         if command_name == "connect":
             content, ephemeral = await do_connect(
-                guild, member, argument, password, self.librespot, self.store, channel_id
+                guild, member, argument, password, self.librespot, self.store, self.web_api_link_manager, channel_id
             )
             if not ephemeral and channel_id is not None:
                 channel = self.client.get_channel(channel_id) or await self.client.fetch_channel(channel_id)
@@ -303,7 +339,7 @@ class InteractionRelay:
                     content = f"{content}\n{note}"
         elif command_name == "reconnect":
             content, ephemeral = await do_reconnect(
-                guild, member, argument, password, self.librespot, self.store, channel_id
+                guild, member, argument, password, self.librespot, self.store, self.web_api_link_manager, channel_id
             )
         elif command_name == "link":
             content, ephemeral = await do_link(str(member.id), argument, password, self.link_manager)
